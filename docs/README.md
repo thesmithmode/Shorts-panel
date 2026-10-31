@@ -14,6 +14,8 @@
 6. [Приёмочные сценарии](acceptance-scenarios.md).
 7. [Открытые вопросы](open-questions.md).
 8. [Журнал решений и уточнений](decisions.md).
+9. [Первый выпуск и запуск](implementation.md).
+10. [Deployment и состояние доступа](deployment.md).
 
 ## Статусы утверждений
 

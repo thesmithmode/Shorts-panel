@@ -1,0 +1,16 @@
+# Independent file-provider route. Check entrypoint and resolver names on the VPS.
+# Do not replace or edit another service's route or Traefik's global configuration.
+http:
+  routers:
+    shorts-panel:
+      rule: Host(`shorts-panel.23-95-166-119.sslip.io`)
+      entryPoints:
+        - VERIFIED_HTTPS_ENTRYPOINT
+      service: shorts-panel
+      tls:
+        certResolver: VERIFIED_CERT_RESOLVER
+  services:
+    shorts-panel:
+      loadBalancer:
+        servers:
+          - url: http://VERIFIED_TRAEFIK_BRIDGE_IP:47921

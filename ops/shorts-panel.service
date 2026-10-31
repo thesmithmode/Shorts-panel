@@ -1,0 +1,32 @@
+[Unit]
+Description=Shorts Panel (independent of Stream Panel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shorts-panel
+Group=shorts-panel
+WorkingDirectory=/opt/shorts-panel/current
+Environment=NODE_ENV=production
+Environment=SHORTS_DATA_DIR=/var/lib/shorts-panel
+EnvironmentFile=/etc/shorts-panel/server.env
+ExecStart=/usr/bin/env node --import tsx src/server/index.ts
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=90
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/shorts-panel
+RestrictSUIDSGID=true
+LockPersonality=true
+CPUWeight=20
+MemoryHigh=384M
+MemoryMax=512M
+TasksMax=96
+
+[Install]
+WantedBy=multi-user.target

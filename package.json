@@ -1,0 +1,36 @@
+{
+  "name": "shorts-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "server": "node --import tsx src/server/index.ts",
+    "build": "tsc --noEmit && vite build",
+    "test": "node --import tsx --test --test-isolation=none tests/*.test.ts",
+    "start": "node --import tsx src/server/index.ts",
+    "check": "tsc --noEmit",
+    "provision": "node --import tsx scripts/provision.ts"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tsx": "^4.20.6"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.0",
+    "@playwright/test": "^1.56.1"
+  }
+}
