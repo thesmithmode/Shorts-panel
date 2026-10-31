@@ -14,7 +14,9 @@
     "test": "node --import tsx --test --test-isolation=none tests/*.test.ts",
     "start": "node --import tsx src/server/index.ts",
     "check": "tsc --noEmit",
-    "provision": "node --import tsx scripts/provision.ts"
+    "provision": "node --import tsx scripts/provision.ts",
+    "coverage": "c8 npm test",
+    "coverage:report": "c8 --check-coverage=false npm test"
   },
   "dependencies": {
     "express": "^5.1.0",
@@ -24,13 +26,14 @@
     "tsx": "^4.20.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
     "@types/express": "^5.0.5",
     "@types/node": "^24.10.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.1.0",
+    "c8": "^12.0.0",
     "typescript": "^5.9.3",
-    "vite": "^7.2.0",
-    "@playwright/test": "^1.56.1"
+    "vite": "^7.2.0"
   }
 }

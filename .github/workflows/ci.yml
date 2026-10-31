@@ -1,5 +1,9 @@
 name: Quality
-on: [push, pull_request]
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
 permissions:
   contents: read
 jobs:
@@ -14,8 +18,26 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: npm test
+      - run: npm run coverage
       - run: npm run build
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npx playwright install --with-deps chromium
       - run: node --import tsx scripts/smoke.ts
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage/
+      - name: Package verified release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          tar -czf /tmp/shorts-release.tgz dist src package.json package-lock.json LICENSE
+          printf '%s' "$GITHUB_SHA" > /tmp/release-sha
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            /tmp/shorts-release.tgz
+            /tmp/release-sha

@@ -2,13 +2,17 @@ import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { PLATFORMS } from "../shared/model.ts";
 import { plan, recoveryAt, deletionAt, HOUR } from "../shared/scheduler.ts";
-import { Store } from "./store.ts";
-import { Providers } from "./providers.ts";
+import type {
+  QueueRepository,
+  PublicationGateway,
+  Clock,
+} from "./contracts.ts";
 export class Engine {
   running = false;
   constructor(
-    private store: Store,
-    private providers: Providers,
+    private store: QueueRepository,
+    private providers: PublicationGateway,
+    private now: Clock = Date.now,
   ) {
     // An interrupted external request may already have published. Require reconciliation.
     for (const d of store.deliveries())
@@ -21,7 +25,7 @@ export class Engine {
         }
       }
   }
-  replan(now = Date.now(), preserveHead = true) {
+  replan(now = this.now(), preserveHead = true) {
     const videos = this.store.videos();
     const assignments = plan(videos, now, preserveHead);
     for (const v of videos)
@@ -30,7 +34,7 @@ export class Engine {
         this.store.video(v);
       }
   }
-  claim(now = Date.now()) {
+  claim(now = this.now()) {
     this.store.transaction(() => {
       for (const v of this.store.videos())
         if (
@@ -60,7 +64,7 @@ export class Engine {
     if (this.running) return;
     this.running = true;
     try {
-      const now = Date.now();
+      const now = this.now();
       this.claim(now);
       this.store.transaction(() => this.replan(now));
       // At most one operation per platform concurrently; one failed platform does not stall others.

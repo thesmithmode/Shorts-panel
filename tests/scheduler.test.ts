@@ -9,6 +9,7 @@ import {
   deletionAt,
   recoveryAt,
   parseMoscow,
+  moscowDate,
 } from "../src/shared/scheduler.ts";
 import type { Video, Delivery } from "../src/shared/model.ts";
 const monday = parseMoscow("2026-11-02T00:00");
@@ -180,4 +181,40 @@ test("head at 17:00 never spills earlier unavailable slots onto an already fille
     [1, 2, 2, 1, 1, 1, 1],
   );
   assert.equal(new Set(all).size, 9);
+});
+
+test("Moscow date validation rejects normalized dates and malformed input", () => {
+  for (const input of [
+    "2026-02-30T12:00",
+    "2026-04-31T06:00",
+    "2026-11-02T24:00",
+    "2026-11-02T12:60",
+    "2026-11-02",
+    "2026-11-02T12:00Z",
+    "garbage",
+  ]) {
+    assert.throws(() => parseMoscow(input), input);
+  }
+  assert.equal(
+    parseMoscow("2028-02-29T06:00"),
+    Date.parse("2028-02-29T03:00:00Z"),
+  );
+});
+
+test("protected head far beyond the horizon never leaves following videos unscheduled", () => {
+  const v = videos(30);
+  v[0].scheduledAt = at(monday + 90 * DAY, 17);
+  const p = plan(v, monday);
+  assert.equal(p.size, v.length);
+  const times = v.map((x) => p.get(x.id)!);
+  assert.equal(new Set(times).size, v.length);
+  assert.deepEqual(
+    times,
+    [...times].sort((a, b) => a - b),
+  );
+});
+
+test("date formatting and empty queues remain valid at Moscow midnight", () => {
+  assert.equal(moscowDate(Date.parse("2026-11-01T21:00:00Z")), "2026-11-02");
+  assert.equal(plan([], monday).size, 0);
 });

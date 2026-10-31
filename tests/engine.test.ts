@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Store } from "../src/server/store.ts";
 import { Engine } from "../src/server/engine.ts";
-import type { Providers } from "../src/server/providers.ts";
+import type { PublicationGateway } from "../src/server/contracts.ts";
 import { DAY, HOUR, parseMoscow } from "../src/shared/scheduler.ts";
 import { PLATFORMS, type Video, type Delivery } from "../src/shared/model.ts";
 test("real SQLite dispatch, failed platform independence, exact file retention across restart", async () => {
@@ -28,7 +28,8 @@ test("real SQLite dispatch, failed platform independence, exact file retention a
       d.externalId = v.id;
       store.delivery(d);
     },
-  } as unknown as Providers;
+    verifyYoutube: async () => {},
+  } satisfies PublicationGateway;
   const video = (id: string, time: number): Video => ({
     id,
     title: id,
@@ -94,7 +95,8 @@ test("uncertain response does not trigger blind duplicate retries", async () => 
       attempts++;
       throw new Error("timeout");
     },
-  } as unknown as Providers;
+    verifyYoutube: async () => {},
+  } satisfies PublicationGateway;
   try {
     store.video({
       id: "x",
@@ -116,6 +118,141 @@ test("uncertain response does not trigger blind duplicate retries", async () => 
     assert.equal(attempts, 3);
     assert.ok(store.deliveries().every((d) => d.state === "unknown"));
   } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test("worker uses injected time without changing the global clock", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shorts-clock-")),
+    store = new Store(dir);
+  const now = parseMoscow("2030-11-02T06:00");
+  let sent = 0;
+  const gateway = {
+    connections: () =>
+      PLATFORMS.map((platform) => ({ platform, connected: true })),
+    publish: async () => {
+      sent++;
+    },
+    verifyYoutube: async () => {},
+  };
+  try {
+    store.video({
+      id: "clock",
+      title: "clock",
+      hashtags: "",
+      filename: "clock.mp4",
+      bytes: 1,
+      createdAt: now,
+      position: 1,
+      scheduledAt: now,
+      pinned: false,
+      kind: "content",
+      state: "queued",
+      deletedAt: null,
+    });
+    await new Engine(store, gateway, () => now).tick();
+    assert.equal(sent, 3);
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test("restart quarantines only ambiguous processing and preserves resumable IDs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shorts-restart-")),
+    store = new Store(dir);
+  const now = Date.now();
+  const gateway: PublicationGateway = {
+    connections: () => [],
+    publish: async () => {},
+    verifyYoutube: async () => {},
+  };
+  try {
+    store.video({
+      id: "r",
+      title: "r",
+      hashtags: "",
+      filename: "r.mp4",
+      bytes: 1,
+      createdAt: now,
+      position: 1,
+      scheduledAt: now,
+      pinned: false,
+      kind: "content",
+      state: "dispatched",
+      deletedAt: null,
+    });
+    for (const platform of PLATFORMS)
+      store.delivery({
+        videoId: "r",
+        platform,
+        state: "processing",
+        originalAt: now,
+        nextAt: now,
+        successAt: null,
+        externalId: platform === "youtube" ? "uploaded-id" : null,
+        url: null,
+        error: null,
+        attempts: 1,
+      });
+    new Engine(store, gateway);
+    assert.equal(
+      store.deliveries().find((d) => d.platform === "youtube")?.state,
+      "processing",
+    );
+    assert.ok(
+      store
+        .deliveries()
+        .filter((d) => d.platform !== "youtube")
+        .every((d) => d.state === "unknown"),
+    );
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test("overlapping worker ticks never dispatch the same video twice", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shorts-overlap-")),
+    store = new Store(dir),
+    now = Date.now();
+  let calls = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const gateway: PublicationGateway = {
+    connections: () =>
+      PLATFORMS.map((platform) => ({ platform, connected: true })),
+    publish: async () => {
+      calls++;
+      await held;
+    },
+    verifyYoutube: async () => {},
+  };
+  try {
+    store.video({
+      id: "c",
+      title: "c",
+      hashtags: "",
+      filename: "c.mp4",
+      bytes: 1,
+      createdAt: now,
+      position: 1,
+      scheduledAt: now,
+      pinned: false,
+      kind: "content",
+      state: "queued",
+      deletedAt: null,
+    });
+    const engine = new Engine(store, gateway, () => now),
+      first = engine.tick();
+    await engine.tick();
+    assert.equal(calls, 3);
+    release();
+    await first;
+    assert.equal(engine.running, false);
+  } finally {
+    release();
     store.db.close();
     rmSync(dir, { recursive: true });
   }

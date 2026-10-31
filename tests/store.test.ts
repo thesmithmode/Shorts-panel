@@ -30,3 +30,30 @@ test("passwords are salted and incorrect passwords rejected", () => {
   assert.ok(passwordCheck("a sufficiently long password", h));
   assert.ok(!passwordCheck("wrong", h));
 });
+
+test("transaction failure rolls back all writes and remains usable", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shorts-rollback-"));
+  const s = new Store(dir);
+  try {
+    assert.throws(() =>
+      s.transaction(() => {
+        s.set("first", { value: 1 });
+        throw new Error("abort");
+      }),
+    );
+    assert.equal(s.get("first"), null);
+    assert.equal(
+      s.transaction(() => {
+        s.set("second", { value: 2 });
+        return 42;
+      }),
+      42,
+    );
+    assert.deepEqual(s.get("second"), { value: 2 });
+    assert.equal(passwordCheck("test", "bad-format"), false);
+    assert.equal(passwordCheck("test", "salt:00"), false);
+  } finally {
+    s.db.close();
+    rmSync(dir, { recursive: true });
+  }
+});

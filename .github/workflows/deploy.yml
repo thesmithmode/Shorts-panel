@@ -1,0 +1,59 @@
+name: Deploy production from main
+on:
+  workflow_run:
+    workflows: [Quality]
+    branches: [main]
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: shorts-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      vars.SHORTS_PRODUCTION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - name: Verify current main SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_SHA" = "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ github.event.workflow_run.head_sha }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: release
+      - name: Deploy through isolated receiver
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SSH_KEY: ${{ secrets.SHORTS_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SHORTS_DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.SHORTS_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.SHORTS_DEPLOY_PORT }}
+        run: |
+          set -euo pipefail
+          test "$(cat release/release-sha)" = "$RELEASE_SHA"
+          test "$DEPLOY_HOST" = '23.95.166.119'
+          test -n "$SSH_KEY" && test -n "$KNOWN_HOSTS"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/shorts-ssh"
+          trap 'rm -rf "$RUNNER_TEMP/shorts-ssh"' EXIT
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/shorts-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/shorts-ssh/known_hosts"
+          ssh -i "$RUNNER_TEMP/shorts-ssh/key" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/shorts-ssh/known_hosts" \
+            -p "${DEPLOY_PORT:-22}" "shorts-deploy@$DEPLOY_HOST" \
+            "release $RELEASE_SHA" < release/shorts-release.tgz

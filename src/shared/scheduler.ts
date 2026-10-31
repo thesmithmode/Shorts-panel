@@ -13,7 +13,12 @@ export function moscowDate(time: number): string {
 }
 export function parseMoscow(value: string): number {
   const n = Date.parse(value + ":00+03:00");
-  if (!Number.isFinite(n)) throw new Error("Некорректное время");
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value) ||
+    !Number.isFinite(n) ||
+    new Date(n + MOSCOW).toISOString().slice(0, 16) !== value
+  )
+    throw new Error("Некорректное время");
   return n;
 }
 const HOURS = [6, 12, 17];
@@ -68,9 +73,10 @@ export function plan(
     protectedVideo && result.has(protectedVideo.id)
       ? result.get(protectedVideo.id)!
       : now;
+  const planningStart = Math.max(first, dayStart(earliest));
   const countDays = 7 + Math.ceil((remaining.length + fixed.length) / 3) + 2;
   for (let i = 0; i < countDays; i++) {
-    const day = first + i * DAY;
+    const day = planningStart + i * DAY;
     const onDay = anchors.filter((a) => dayStart(a.time) === day);
     const fixedTimes = onDay.map((a) => a.time);
     days.push({
