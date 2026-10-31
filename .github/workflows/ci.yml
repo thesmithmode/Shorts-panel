@@ -18,6 +18,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: python3 -m unittest discover -s tests/deploy -v
       - run: npm run coverage
       - run: npm run build
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -32,7 +33,8 @@ jobs:
       - name: Package verified release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          tar -czf /tmp/shorts-release.tgz dist src package.json package-lock.json LICENSE
+          npm ci --omit=dev
+          tar --dereference -czf /tmp/shorts-release.tgz dist src node_modules package.json package-lock.json LICENSE
           printf '%s' "$GITHUB_SHA" > /tmp/release-sha
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

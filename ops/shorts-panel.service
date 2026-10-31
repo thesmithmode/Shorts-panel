@@ -9,6 +9,7 @@ User=shorts-panel
 Group=shorts-panel
 WorkingDirectory=/opt/shorts-panel/current
 Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=256
 Environment=SHORTS_DATA_DIR=/var/lib/shorts-panel
 EnvironmentFile=/etc/shorts-panel/server.env
 ExecStart=/usr/bin/env node --import tsx src/server/index.ts
@@ -24,6 +25,9 @@ ReadWritePaths=/var/lib/shorts-panel
 RestrictSUIDSGID=true
 LockPersonality=true
 CPUWeight=20
+CPUQuota=50%
+IOWeight=20
+Nice=10
 MemoryHigh=384M
 MemoryMax=512M
 TasksMax=96

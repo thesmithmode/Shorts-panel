@@ -8,11 +8,11 @@ import {
 } from "node:crypto";
 import {
   createWriteStream,
-  createReadStream,
+  readFileSync,
+  existsSync,
   renameSync,
   unlinkSync,
   statfsSync,
-  statSync,
   openSync,
   readSync,
   closeSync,
@@ -28,6 +28,8 @@ import { Providers } from "./providers.ts";
 import { Engine } from "./engine.ts";
 import { PLATFORMS, type Platform, type Video } from "../shared/model.ts";
 import { parseMoscow, recoveryAt } from "../shared/scheduler.ts";
+import { releaseIdentity } from "./health.ts";
+const release = releaseIdentity(existsSync(resolve("release-sha")) ? readFileSync(resolve("release-sha"),"utf8") : undefined);
 const dir = resolve(process.env.SHORTS_DATA_DIR ?? "data");
 const origin = process.env.SHORTS_PUBLIC_ORIGIN ?? "http://127.0.0.1:5173";
 const publicUrl = new URL(origin);
@@ -80,7 +82,7 @@ function session(req: express.Request) {
   return r && r.expires > Date.now() ? r : null;
 }
 app.get("/healthz", (_req, res) =>
-  res.json({ ok: true, service: "shorts-panel" }),
+  res.json({ ok: true, service: "shorts-panel", release }),
 );
 const failures = new Map<string, { n: number; start: number }>();
 app.post("/api/login", (req, res) => {
