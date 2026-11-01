@@ -9,6 +9,22 @@ import {
   type Token,
 } from "./store.ts";
 import type { Platform, Video, Delivery, Connection } from "../shared/model.ts";
+function tokenResponse(value: any): {
+  access_token: string;
+  expires_in: number;
+} {
+  if (
+    typeof value?.access_token !== "string" ||
+    !value.access_token.trim() ||
+    !Number.isSafeInteger(value.expires_in) ||
+    value.expires_in <= 0 ||
+    value.expires_in > 366 * 86400
+  )
+    throw new Error(
+      "Неполный ответ авторизации. Прежнее подключение сохранено.",
+    );
+  return value;
+}
 const IG = "https://graph.instagram.com/v25.0";
 async function json(url: string, init?: RequestInit): Promise<any> {
   const response = await fetch(url, {
@@ -87,6 +103,7 @@ export class Providers {
     return u.href;
   }
   async exchange(p: Platform, code: string) {
+    if (p === "tiktok") throw new Error("Direct Post TikTok ещё не настроен");
     const c = this.store.get<AppConfig>(configKey(p));
     if (!c) throw new Error("Нет конфигурации");
     if (p === "youtube") {
@@ -104,6 +121,7 @@ export class Providers {
         throw new Error(
           "Google не выдал долгосрочное разрешение. Повторите подключение.",
         );
+      tokenResponse(t);
       const channel = await json(
         "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
         { headers: { Authorization: `Bearer ${t.access_token}` } },
@@ -145,7 +163,8 @@ export class Providers {
             access_token: t.access_token,
           }),
       );
-      if (!t.access_token || !me.user_id)
+      tokenResponse(t);
+      if (!t.access_token || !me.user_id || !me.username)
         throw new Error("Неполный ответ Instagram");
       this.store.set(tokenKey(p), {
         accessToken: t.access_token,
@@ -169,6 +188,7 @@ export class Providers {
           grant_type: "refresh_token",
         }),
       });
+      tokenResponse(r);
       t.accessToken = r.access_token;
       t.expiresAt = Date.now() + r.expires_in * 1000;
       this.store.set(tokenKey(p), t);
@@ -183,6 +203,7 @@ export class Providers {
             access_token: t.accessToken,
           }),
       );
+      tokenResponse(r);
       t.accessToken = r.access_token;
       t.expiresAt = Date.now() + r.expires_in * 1000;
       this.store.set(tokenKey(p), t);
@@ -224,7 +245,10 @@ export class Providers {
       );
       const location = init.headers.get("location");
       if (!init.ok || !location) throw new Error("YouTube не создал загрузку");
-      if (new URL(location).hostname !== "www.googleapis.com")
+      if (
+        new URL(location).hostname !== "www.googleapis.com" ||
+        new URL(location).protocol !== "https:"
+      )
         throw new Error("Некорректный адрес загрузки");
       this.store.set(`upload:${v.id}:youtube`, { location });
       const response = await fetch(location, {
@@ -282,19 +306,28 @@ export class Providers {
         }),
       });
       this.store.set(`published:${v.id}:instagram`, published.id);
-      const media = await json(
-        `${IG}/${published.id}?` +
-          new URLSearchParams({
-            fields: "id,permalink",
-            access_token: token.accessToken,
-          }),
-      );
-      d.url = media.permalink ?? null;
+      if (typeof published.id !== "string" || !published.id)
+        throw new Error("Instagram не подтвердил ID публикации");
       d.externalId = published.id;
       d.state = "published";
       d.successAt = Date.now();
       d.error = null;
       save();
+      // Publishing success is durable before optional permalink enrichment.
+      try {
+        const media = await json(
+          `${IG}/${published.id}?` +
+            new URLSearchParams({
+              fields: "id,permalink",
+              access_token: token.accessToken,
+            }),
+        );
+        d.url = typeof media.permalink === "string" ? media.permalink : null;
+        save();
+      } catch {
+        /* A missing permalink must not schedule a second post. */
+      }
+
       return;
     } else throw new Error("Direct Post TikTok ещё не настроен");
     await this.verifyYoutube(d, token);

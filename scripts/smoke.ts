@@ -1,5 +1,12 @@
+import { uiScenarios } from "./ui-scenarios.ts";
 import { chromium, expect } from "@playwright/test";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
@@ -64,10 +71,19 @@ try {
     viewport: { width: 1504, height: 1045 },
   });
   const page = await context.newPage();
+  const coverageParts: unknown[] = [];
+  async function collectCoverage() {
+    if (process.env.SHORTS_BROWSER_COVERAGE)
+      coverageParts.push(
+        await page.evaluate(() => (window as any).__coverage__),
+      );
+  }
+  let expectedHttpErrors = false;
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (e) => {
     if (
+      !expectedHttpErrors &&
       e.type() === "error" &&
       !e.text().includes("401") &&
       !e.text().includes("403")
@@ -133,14 +149,34 @@ try {
     });
     expect(response.status(), await response.text()).toBe(201);
   }
-  const invalid = await context.request.post(origin + "/api/videos", { headers: { Origin: origin, "X-CSRF-Token": state.csrf, "Content-Type": "video/mp4", "X-Video-Title": "invalid" }, data: Buffer.from("invalid video") });
+  const invalid = await context.request.post(origin + "/api/videos", {
+    headers: {
+      Origin: origin,
+      "X-CSRF-Token": state.csrf,
+      "Content-Type": "video/mp4",
+      "X-Video-Title": "invalid",
+    },
+    data: Buffer.from("invalid video"),
+  });
   expect(invalid.status()).toBe(400);
+  await collectCoverage();
   await page.reload();
   await expect(page.locator(".video-list article")).toHaveCount(9);
-  const beforeOrder = await (await context.request.get(origin + "/api/state")).json();
+  const beforeOrder = await (
+    await context.request.get(origin + "/api/state")
+  ).json();
   const lastId = beforeOrder.videos.at(-1).id;
-  await page.getByRole("button", { name: "Выше: За кадром", exact: true }).click();
-  await expect.poll(async () => (await (await context.request.get(origin + "/api/state")).json()).videos.at(-2).id).toBe(lastId);
+  await page
+    .getByRole("button", { name: "Выше: За кадром", exact: true })
+    .click();
+  await expect
+    .poll(
+      async () =>
+        (
+          await (await context.request.get(origin + "/api/state")).json()
+        ).videos.at(-2).id,
+    )
+    .toBe(lastId);
   const snapshot = await (
     await context.request.get(origin + "/api/state")
   ).json();
@@ -223,6 +259,16 @@ try {
   ).toBeVisible();
   expect((await context.request.get(origin + "/api/state")).status()).toBe(401);
   expect(errors).toEqual([]);
+  expectedHttpErrors = true;
+  await uiScenarios(page, snapshot, fixture, collectCoverage);
+  expect(errors).toEqual([]);
+  if (process.env.SHORTS_BROWSER_COVERAGE) {
+    await collectCoverage();
+    writeFileSync(
+      process.env.SHORTS_BROWSER_COVERAGE,
+      JSON.stringify(coverageParts),
+    );
+  }
   console.log(
     "PASS: login, CSRF/Origin, real video upload, 9-video queue, pin, all calendar views, preview ranges, OAuth configuration secrecy, desktop/mobile, logout. No runtime/console errors.",
   );

@@ -65,7 +65,27 @@ export function App() {
       setError((e as Error).message);
     }
   }
-  if (loggedIn === null) return <div className="loading">Загружаю панель…</div>;
+  if (loggedIn === null)
+    return error ? (
+      <div className="loading">
+        <section>
+          <h1>Панель временно недоступна</h1>
+          <p role="alert" className="error">
+            {error}
+          </p>
+          <button
+            onClick={() => {
+              setError("");
+              void refresh();
+            }}
+          >
+            Повторить загрузку
+          </button>
+        </section>
+      </div>
+    ) : (
+      <div className="loading">Загружаю панель…</div>
+    );
   if (!loggedIn) return <Login onLogin={refresh} />;
   const selected = data?.videos.find((v) => v.id === editor);
   return (
