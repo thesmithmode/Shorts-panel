@@ -1029,3 +1029,15 @@ dialog > header {
     scroll-behavior: auto !important;
   }
 }
+
+.loading > section {
+  width: min(480px, calc(100vw - 48px));
+  display: grid;
+  gap: 16px;
+}
+.loading > section h1 {
+  font-size: clamp(26px, 5vw, 34px);
+}
+.loading > section button {
+  justify-self: start;
+}

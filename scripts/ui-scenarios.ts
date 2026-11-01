@@ -265,6 +265,7 @@ export async function uiScenarios(
   failure = "state";
   await reload();
   await expect(page.getByRole("alert")).toHaveText("Ошибка состояния");
+  expect((await page.locator(".loading section").boundingBox())!.x).toBeGreaterThanOrEqual(16);
   failure = "";
   await page.getByRole("button", { name: "Повторить загрузку" }).click();
   await expect(

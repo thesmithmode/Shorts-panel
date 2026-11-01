@@ -19,7 +19,12 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: python3 -m unittest discover -s tests/deploy -v
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Ensure FFmpeg tools
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update -o Acquire::Retries=2 -o Acquire::http::Timeout=20
+            sudo apt-get install -y ffmpeg
+          fi
       - run: npx playwright install --with-deps chromium
       - run: npm run coverage
 
