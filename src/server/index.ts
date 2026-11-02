@@ -19,7 +19,8 @@ const server = app.listen(port, host, () => {
 server.requestTimeout = 20 * 60_000;
 process.on("SIGTERM", () => {
   if (timer) clearInterval(timer);
-  server.close(() => {
+  server.close(async () => {
+    await engine.whenIdle();
     releaseLock();
     process.exit(0);
   });

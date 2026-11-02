@@ -11,6 +11,12 @@ import type {
 import { RetryableBeforeSend, RetryableSession } from "./contracts.ts";
 export class Engine {
   running = false;
+  private idleWaiters: (() => void)[] = [];
+  whenIdle(): Promise<void> {
+    return this.running
+      ? new Promise((resolve) => this.idleWaiters.push(resolve))
+      : Promise.resolve();
+  }
   constructor(
     private store: QueueRepository,
     private providers: PublicationGateway,
@@ -185,6 +191,7 @@ export class Engine {
       }
     } finally {
       this.running = false;
+      for (const resolve of this.idleWaiters.splice(0)) resolve();
     }
   }
 }

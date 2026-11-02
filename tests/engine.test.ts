@@ -388,3 +388,27 @@ test("a worker failure waits for other platform operations before allowing anoth
     assert.equal(engine.running, false);
   } finally { release(); store.db.close(); rmSync(dir, { recursive: true }); }
 });
+
+test("worker drain waits until in-flight platform requests settle", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shorts-drain-"));
+  const store = new Store(dir);
+  const clock = parseMoscow("2026-11-02T12:00");
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const gateway: PublicationGateway = {
+    connections: () => PLATFORMS.map((platform) => ({ platform, connected: true })),
+    publish: async () => { await held; }, verifyYoutube: async () => {},
+  };
+  try {
+    store.video({ id: "drain", title: "drain", hashtags: "", filename: "drain.mp4", bytes: 1, createdAt: clock, position: 1, scheduledAt: clock, pinned: false, kind: "content", state: "queued", deletedAt: null });
+    const engine = new Engine(store, gateway, () => clock);
+    await engine.whenIdle();
+    const tick = engine.tick();
+    let drained = false;
+    const wait = engine.whenIdle().then(() => { drained = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(drained, false);
+    release(); await tick; await wait;
+    assert.equal(drained, true);
+  } finally { release(); store.db.close(); rmSync(dir, { recursive: true }); }
+});
