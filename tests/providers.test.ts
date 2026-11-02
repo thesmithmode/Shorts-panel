@@ -563,3 +563,26 @@ test("unconfirmed Instagram publish never repeats even when container remains fi
     assert.equal(h.calls.length, 1);
   } finally { h.close(); }
 });
+
+test("Instagram malformed status response does not leave a delivery processing forever", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("instagram"), h.token);
+    const d = h.delivery("instagram"); d.externalId = "container";
+    h.replies.push({ body: {} });
+    await assert.rejects(() => h.provider.publish(h.video, d));
+    assert.equal(h.calls.length, 1);
+  } finally { h.close(); }
+});
+
+test("Instagram refuses an incomplete container creation response without issuing a status request", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("instagram"), h.token);
+    const d = h.delivery("instagram");
+    h.replies.push({ body: {} });
+    await assert.rejects(() => h.provider.publish(h.video, d));
+    assert.equal(h.calls.length, 1);
+    assert.equal(d.externalId, null);
+  } finally { h.close(); }
+});

@@ -334,6 +334,8 @@ export class Providers {
             access_token: token.accessToken,
           }),
         });
+        if (typeof r.id !== "string" || !r.id.trim())
+          throw new Error("Instagram не подтвердил ID контейнера");
         d.externalId = r.id;
         save();
       }
@@ -361,6 +363,8 @@ export class Providers {
       if (status.status_code !== "FINISHED") {
         if (status.status_code === "ERROR" || status.status_code === "EXPIRED")
           throw new Error("Instagram не обработал видео");
+        if (status.status_code !== "IN_PROGRESS")
+          throw new RetryableSession("Instagram вернул неизвестный статус контейнера");
         d.state = "processing";
         d.nextAt = Date.now() + 30_000;
         save();
