@@ -521,3 +521,28 @@ test("upload budget refuses new data without deleting queued originals", async (
 test('state reads deliveries once regardless of queue size',async()=>{
  const h=await fixture();try{await h.login();for(let i=0;i<8;i++)h.video('video'+i);const spy=mock.method(h.store,'deliveries');const response=await h.req('/api/state');assert.equal(response.status,200);assert.equal((await response.json() as any).videos.length,8);assert.equal(spy.mock.callCount(),1);}finally{await h.close();}
 });
+
+test("orphaned and partial files consume the upload budget after interruption", async () => {
+  const h = await fixture({ SHORTS_VIDEO_BUDGET_BYTES: "12" });
+  try {
+    await h.login();
+    writeFileSync(join(h.dir, "videos", "interrupted.part"), "12345");
+    writeFileSync(join(h.dir, "videos", "unrecorded.mp4"), "1234");
+    const state = await h.req("/api/state");
+    assert.equal(((await state.json()) as any).storage.used, 9);
+    const response = await h.req("/api/videos", "ftyp", "POST", { "Content-Type": "video/mp4", "X-Video-Title": "new" });
+    assert.equal(response.status, 507);
+  } finally { await h.close(); }
+});
+
+test("storage counts each recorded file once and protects against larger actual files", async () => {
+  const h = await fixture();
+  try {
+    await h.login();
+    h.video();
+    writeFileSync(join(h.dir, "videos", "v.mp4"), "123456");
+    writeFileSync(join(h.dir, "videos", "other.part"), "1234");
+    const response = await h.req("/api/state");
+    assert.equal(((await response.json()) as any).storage.used, 10);
+  } finally { await h.close(); }
+});

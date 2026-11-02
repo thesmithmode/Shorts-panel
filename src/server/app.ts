@@ -17,6 +17,8 @@ import {
   readSync,
   closeSync,
   fsyncSync,
+  readdirSync,
+  statSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { Transform } from "node:stream";
@@ -208,12 +210,22 @@ export function createApplication(options: ApplicationOptions = {}) {
   });
   const storage = () => {
     const fs = statfsSync(dir);
+    const tracked = new Map(
+      store.videos().filter((v) => !v.deletedAt).map((v) => [v.filename, v.bytes]),
+    );
+    let used = [...tracked.values()].reduce((total, bytes) => total + bytes, 0);
+    for (const entry of readdirSync(join(dir, "videos"), { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      try {
+        const size = statSync(join(dir, "videos", entry.name)).size;
+        used += Math.max(0, size - (tracked.get(entry.name) ?? 0));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
     return {
       free: fs.bavail * fs.bsize,
-      used: store
-        .videos()
-        .filter((v) => !v.deletedAt)
-        .reduce((n, v) => n + v.bytes, 0),
+      used,
       reserve,
       budget,
     };
