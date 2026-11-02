@@ -586,3 +586,53 @@ test("Instagram refuses an incomplete container creation response without issuin
     assert.equal(d.externalId, null);
   } finally { h.close(); }
 });
+
+for (const platform of ["youtube", "instagram"] as const) {
+  test(`${platform} refuses to initiate publication when original is missing`, async () => {
+    const { SourceUnavailable } = await import("../src/server/contracts.ts");
+    assert.equal(typeof SourceUnavailable, "function");
+    const h = harness();
+    try {
+      h.store.set(tokenKey(platform), h.token);
+      rmSync(join(h.store.dir, "videos", h.video.filename));
+      await assert.rejects(() => h.provider.publish(h.video, h.delivery(platform)), SourceUnavailable);
+      assert.equal(h.calls.length, 0);
+    } finally { h.close(); }
+  });
+}
+
+test("completed YouTube upload can still be confirmed even when local original is missing", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("youtube"), h.token);
+    h.store.set("upload:v:youtube", { location: "https://www.googleapis.com/upload/session" });
+    rmSync(join(h.store.dir, "videos", h.video.filename));
+    h.replies.push({ body: { id: "already-uploaded" } }, { body: { items: [{ status: { uploadStatus: "processed", privacyStatus: "public" } }] } });
+    const d = h.delivery("youtube");
+    await h.provider.publish(h.video, d);
+    assert.equal(d.state, "published");
+  } finally { h.close(); }
+});
+
+test("a truncated original cannot start a new YouTube upload", async () => {
+  const { SourceUnavailable } = await import("../src/server/contracts.ts");
+  const h = harness();
+  try {
+    h.store.set(tokenKey("youtube"), h.token);
+    writeFileSync(join(h.store.dir, "videos", h.video.filename), "x");
+    await assert.rejects(() => h.provider.publish(h.video, h.delivery("youtube")), SourceUnavailable);
+    assert.equal(h.calls.length, 0);
+  } finally { h.close(); }
+});
+
+test("published Instagram container can be confirmed even when local original is missing", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("instagram"), h.token);
+    rmSync(join(h.store.dir, "videos", h.video.filename));
+    const d = h.delivery("instagram"); d.externalId = "container";
+    h.replies.push({ body: { status_code: "PUBLISHED" } });
+    await h.provider.publish(h.video, d);
+    assert.equal(d.state, "published");
+  } finally { h.close(); }
+});

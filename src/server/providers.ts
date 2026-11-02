@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, statSync } from "node:fs";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import {
@@ -9,7 +9,7 @@ import {
   type Token,
 } from "./store.ts";
 import type { Platform, Video, Delivery, Connection } from "../shared/model.ts";
-import { RetryableBeforeSend, RetryableSession } from "./contracts.ts";
+import { RetryableBeforeSend, RetryableSession, SourceUnavailable } from "./contracts.ts";
 function tokenResponse(value: any): {
   access_token: string;
   expires_in: number;
@@ -245,6 +245,15 @@ export class Providers {
       return false;
     }
   }
+  private requireSource(v: Video) {
+    try {
+      const file = statSync(join(this.store.dir, "videos", v.filename));
+      if (file.isFile() && file.size === v.bytes) return;
+    } catch {
+      // Missing or inaccessible originals require restoration, not an API request.
+    }
+    throw new SourceUnavailable("Исходный файл недоступен или повреждён");
+  }
   async publish(v: Video, d: Delivery): Promise<void> {
     let token: Token;
     try {
@@ -281,6 +290,7 @@ export class Providers {
           if (!result?.id) throw new Error("Нет ID YouTube");
         } else throw new Error("Не удалось восстановить загрузку YouTube");
       } else {
+        this.requireSource(v);
         const init = await fetch(
           "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
           {
@@ -304,6 +314,7 @@ export class Providers {
         this.store.set(`upload:${v.id}:youtube`, { location });
       }
       if (!result) {
+        this.requireSource(v);
         const response = await sessionFetch(location!, {
           method: "PUT",
           redirect: "error",
@@ -325,6 +336,7 @@ export class Providers {
       save();
     } else if (d.platform === "instagram") {
       if (!d.externalId) {
+        this.requireSource(v);
         const r = await json(`${IG}/${token.accountId}/media`, {
           method: "POST",
           body: new URLSearchParams({

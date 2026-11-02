@@ -412,3 +412,24 @@ test("worker drain waits until in-flight platform requests settle", async () => 
     assert.equal(drained, true);
   } finally { release(); store.db.close(); rmSync(dir, { recursive: true }); }
 });
+
+test("missing original is flagged and scheduled safely without an ambiguous publication warning", async () => {
+  const { SourceUnavailable } = await import("../src/server/contracts.ts");
+  assert.equal(typeof SourceUnavailable, "function");
+  const dir = mkdtempSync(join(tmpdir(), "shorts-no-source-"));
+  const store = new Store(dir);
+  const clock = parseMoscow("2026-11-02T12:00");
+  const gateway: PublicationGateway = {
+    connections: () => PLATFORMS.map((platform) => ({ platform, connected: true })),
+    publish: async () => { throw new SourceUnavailable(); }, verifyYoutube: async () => {},
+  };
+  try {
+    store.video({ id: "missing", title: "missing", hashtags: "", filename: "missing.mp4", bytes: 1, createdAt: clock, position: 1, scheduledAt: clock, pinned: false, kind: "content", state: "queued", deletedAt: null });
+    await new Engine(store, gateway, () => clock).tick();
+    for (const d of store.deliveries()) {
+      assert.equal(d.state, "failed");
+      assert.match(d.error!, /файл/i);
+      assert.equal(d.nextAt, clock + 60_000);
+    }
+  } finally { store.db.close(); rmSync(dir, { recursive: true }); }
+});

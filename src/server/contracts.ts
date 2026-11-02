@@ -3,6 +3,8 @@ import type { Video, Delivery, Platform } from "../shared/model.ts";
 export class RetryableBeforeSend extends Error {}
 /** Existing external state can be checked safely before another publication request. */
 export class RetryableSession extends Error {}
+/** Local source is unavailable; no new publication was initiated by this attempt. */
+export class SourceUnavailable extends Error {}
 /** Queue persistence needed by the worker, independent of SQLite implementation. */
 export interface QueueRepository {
   readonly dir: string;
