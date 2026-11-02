@@ -9,6 +9,7 @@ import {
   type Token,
 } from "./store.ts";
 import type { Platform, Video, Delivery, Connection } from "../shared/model.ts";
+import { RetryableBeforeSend } from "./contracts.ts";
 function tokenResponse(value: any): {
   access_token: string;
   expires_in: number;
@@ -218,7 +219,12 @@ export class Providers {
     return `${this.origin}/media/${videoId}?expires=${expires}&signature=${sig}`;
   }
   async publish(v: Video, d: Delivery): Promise<void> {
-    const token = await this.token(d.platform);
+    let token: Token;
+    try {
+      token = await this.token(d.platform);
+    } catch (cause) {
+      throw new RetryableBeforeSend("Не удалось обновить доступ к площадке", { cause });
+    }
     const save = () => this.store.delivery(d);
     if (d.platform === "youtube") {
       // Persist resumable session before uploading. Never retry an ambiguous final upload.

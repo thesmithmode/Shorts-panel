@@ -1,4 +1,6 @@
 import type { Video, Delivery, Platform } from "../shared/model.ts";
+/** No publication request was made, so retrying cannot create a duplicate. */
+export class RetryableBeforeSend extends Error {}
 /** Queue persistence needed by the worker, independent of SQLite implementation. */
 export interface QueueRepository {
   readonly dir: string;

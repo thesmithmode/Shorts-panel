@@ -264,3 +264,43 @@ test('restart after grace window schedules backlog rather than sending immediate
  try {store.video({id:'late',title:'late',hashtags:'',filename:'late.mp4',bytes:1,createdAt:1,position:1,scheduledAt:parseMoscow('2026-11-02T12:00'),pinned:false,kind:'content',state:'queued',deletedAt:null});await new Engine(store,gateway,()=>now).tick();assert.equal(calls,0);assert.ok(store.deliveries().every(d=>d.nextAt>now));}
  finally{store.db.close();rmSync(dir,{recursive:true});}
 });
+
+test("safe pre-send failures retry within grace and move to recovery after the deadline", async () => {
+  const { RetryableBeforeSend } = await import("../src/server/contracts.ts");
+  const dir = mkdtempSync(join(tmpdir(), "shorts-retry-"));
+  const store = new Store(dir);
+  let clock = parseMoscow("2026-11-02T12:00");
+  let attempts = 0;
+  const gateway: PublicationGateway = {
+    connections: () => PLATFORMS.map((platform) => ({ platform, connected: true })),
+    publish: async (_v, d) => {
+      attempts++;
+      if (d.platform === "youtube") throw new RetryableBeforeSend();
+      d.state = "published";
+      d.successAt = clock;
+      store.delivery(d);
+    },
+    verifyYoutube: async () => {},
+  };
+  try {
+    store.video({ id: "retry", title: "retry", hashtags: "", filename: "retry.mp4", bytes: 1, createdAt: clock, position: 1, scheduledAt: clock, pinned: false, kind: "content", state: "queued", deletedAt: null });
+    const engine = new Engine(store, gateway, () => clock);
+    await engine.tick();
+    let delivery = store.deliveries().find((d) => d.platform === "youtube")!;
+    assert.equal(delivery.state, "failed");
+    assert.equal(delivery.nextAt, clock + 60_000);
+    await engine.tick();
+    assert.equal(attempts, 3);
+    clock += 60_000;
+    await engine.tick();
+    assert.equal(attempts, 4);
+    clock = delivery.originalAt + HOUR;
+    await engine.tick();
+    delivery = store.deliveries().find((d) => d.platform === "youtube")!;
+    assert.equal(attempts, 4);
+    assert.ok(delivery.nextAt > clock);
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true });
+  }
+});

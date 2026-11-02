@@ -8,6 +8,7 @@ import type {
   PublicationGateway,
   Clock,
 } from "./contracts.ts";
+import { RetryableBeforeSend } from "./contracts.ts";
 export class Engine {
   running = false;
   constructor(
@@ -134,10 +135,18 @@ export class Engine {
             if (platform === "youtube" && due.externalId)
               await this.providers.verifyYoutube(due);
             else await this.providers.publish(v, due);
-          } catch {
-            due.state = "unknown";
-            due.error =
-              "Не удалось подтвердить результат. Проверьте пост на площадке: слепой повтор может создать дубликат.";
+          } catch (error) {
+            if (error instanceof RetryableBeforeSend) {
+              due.state = "failed";
+              due.error = "Не удалось обновить доступ к площадке. Повторим по расписанию.";
+              due.nextAt = now < due.originalAt + HOUR
+                ? Math.min(now + 60_000, due.originalAt + HOUR)
+                : recoveryAt(due.originalAt, now, platform, this.store.videos(), all);
+            } else {
+              due.state = "unknown";
+              due.error =
+                "Не удалось подтвердить результат. Проверьте пост на площадке: слепой повтор может создать дубликат.";
+            }
             this.store.delivery(due);
           }
         }),
