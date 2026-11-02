@@ -75,7 +75,7 @@ export class Engine {
       this.claim(now);
       this.store.transaction(() => this.replan(now));
       // At most one operation per platform concurrently; one failed platform does not stall others.
-      await Promise.all(
+      const operations = await Promise.allSettled(
         PLATFORMS.map(async (platform) => {
           const all = this.store.deliveries();
           for (const d of all)
@@ -158,6 +158,11 @@ export class Engine {
           }
         }),
       );
+      const failures = operations.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failures.length)
+        throw new AggregateError(failures.map((failure) => failure.reason), "Publication worker failed");
       const deliveriesByVideo = groupDeliveries(this.store.deliveries());
       for (const v of this.store.videos()) {
         const ds = deliveriesByVideo.get(v.id) ?? [];

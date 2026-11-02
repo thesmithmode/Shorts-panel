@@ -559,3 +559,32 @@ test("Instagram ambiguous publish marker is cleared only after explicit no-post 
     assert.equal(h.store.get("publishing:v:instagram"), null);
   } finally { await h.close(); }
 });
+
+test("a due video is claimed before an edit can change its title or scheduled time", async () => {
+  const h = await fixture();
+  try {
+    await h.login();
+    const v = h.video("due-edit");
+    v.scheduledAt = Date.now() - 1000;
+    h.store.video(v);
+    const response = await h.req("/api/videos/due-edit", { title: "too late" }, "PATCH");
+    assert.equal(response.status, 409);
+    assert.equal(h.store.videos().find((x) => x.id === v.id)?.title, "due-edit");
+    assert.equal(h.store.videos().find((x) => x.id === v.id)?.state, "dispatched");
+    assert.equal(h.store.deliveries().filter((d) => d.videoId === v.id).length, 3);
+  } finally { await h.close(); }
+});
+
+test("reorder rejects stale queue if a slot became due before the worker tick", async () => {
+  const h = await fixture();
+  try {
+    await h.login();
+    const v = h.video("due-reorder");
+    v.scheduledAt = Date.now() - 1000;
+    h.store.video(v);
+    const response = await h.req("/api/reorder", { ids: [v.id] });
+    assert.equal(response.status, 400);
+    assert.equal(h.store.videos().find((x) => x.id === v.id)?.state, "dispatched");
+    assert.equal(h.store.deliveries().length, 3);
+  } finally { await h.close(); }
+});

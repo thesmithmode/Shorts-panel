@@ -356,3 +356,35 @@ test("interrupted upload schedules session reconciliation without requiring a re
     assert.equal(store.deliveries().find((d) => d.platform === "youtube")?.state, "published");
   } finally { store.db.close(); rmSync(dir, { recursive: true }); }
 });
+
+test("a worker failure waits for other platform operations before allowing another tick", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shorts-tick-error-"));
+  const store = new Store(dir);
+  const clock = parseMoscow("2026-11-02T12:00");
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  let checks = 0;
+  const gateway: PublicationGateway = {
+    connections: () => {
+      checks++;
+      if (checks === 2) throw new Error("unexpected connection failure");
+      return PLATFORMS.map((platform) => ({ platform, connected: true }));
+    },
+    publish: async () => { calls++; await held; },
+    verifyYoutube: async () => {},
+  };
+  try {
+    store.video({ id: "held", title: "held", hashtags: "", filename: "held.mp4", bytes: 1, createdAt: clock, position: 1, scheduledAt: clock, pinned: false, kind: "content", state: "queued", deletedAt: null });
+    const engine = new Engine(store, gateway, () => clock);
+    const first = engine.tick().catch(() => {});
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(engine.running, true);
+    const initialCalls = calls;
+    await engine.tick();
+    assert.equal(calls, initialCalls);
+    release();
+    await first;
+    assert.equal(engine.running, false);
+  } finally { release(); store.db.close(); rmSync(dir, { recursive: true }); }
+});

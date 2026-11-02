@@ -375,6 +375,7 @@ export function createApplication(options: ApplicationOptions = {}) {
     res.type("video/mp4").sendFile(join(dir, "videos", v.filename));
   });
   app.patch("/api/videos/:id", (req, res) => {
+    engine.claim();
     const v = store.videos().find((v) => v.id === req.params.id);
     if (!v) return res.sendStatus(404);
     if (v.state !== "queued")
@@ -427,6 +428,7 @@ export function createApplication(options: ApplicationOptions = {}) {
     }
   });
   app.post("/api/reorder", (req, res) => {
+    engine.claim();
     const ids = req.body.ids;
     const queued = store.videos().filter((v) => v.state === "queued");
     if (
