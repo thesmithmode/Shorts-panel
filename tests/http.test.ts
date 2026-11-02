@@ -1,9 +1,10 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { execFileSync } from "node:child_process";
 import { createApplication } from "../src/server/app.ts";
 import { Store, passwordHash } from "../src/server/store.ts";
 import { PLATFORMS, type Video, type Delivery } from "../src/shared/model.ts";
@@ -586,5 +587,42 @@ test("reorder rejects stale queue if a slot became due before the worker tick", 
     assert.equal(response.status, 400);
     assert.equal(h.store.videos().find((x) => x.id === v.id)?.state, "dispatched");
     assert.equal(h.store.deliveries().length, 3);
+  } finally { await h.close(); }
+});
+
+test("a failure after the video transaction commits never deletes the queued original", async () => {
+  const h = await fixture();
+  try {
+    await h.login();
+    const input = join(h.dir, "source.mp4");
+    execFileSync("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", "color=s=180x320:d=3.1", "-c:v", "libx264", "-pix_fmt", "yuv420p", input], { timeout: 30000 });
+    const bytes = readFileSync(input);
+    const transaction = h.store.transaction.bind(h.store);
+    let calls = 0;
+    mock.method(h.store, "transaction", (fn: () => unknown) => {
+      const result = transaction(fn);
+      if (++calls === 2) throw new Error("response lost after commit");
+      return result;
+    });
+    await fetch(h.base + "/api/videos", { method: "POST", headers: { Origin: origin, Cookie: h.getCookie(), "X-CSRF-Token": h.getCsrf(), "Content-Type": "video/mp4", "X-Video-Title": "Durable" }, body: bytes });
+    const video = h.store.videos().find((v) => v.title === "Durable");
+    assert.ok(video);
+    assert.equal(existsSync(join(h.dir, "videos", video.filename)), true);
+  } finally { await h.close(); }
+});
+
+test("storage reports abandoned files without revealing their names or counting registered files", async () => {
+  const h = await fixture();
+  try {
+    await h.login();
+    h.video("recorded");
+    writeFileSync(join(h.dir, "videos", "recorded.mp4"), "1234");
+    writeFileSync(join(h.dir, "videos", "unrecorded.mp4"), "12345");
+    writeFileSync(join(h.dir, "videos", "unfinished.part"), "123");
+    const response = await h.req("/api/state");
+    const storage = ((await response.json()) as any).storage;
+    assert.equal(storage.orphaned, 2);
+    assert.equal(storage.orphanedBytes, 8);
+    assert.ok(!JSON.stringify(storage).includes("unrecorded.mp4"));
   } finally { await h.close(); }
 });

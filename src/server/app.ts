@@ -208,17 +208,23 @@ export function createApplication(options: ApplicationOptions = {}) {
         .json({ error: "Обновите страницу и повторите действие" });
     next();
   });
+  let activeUpload: string | null = null;
   const storage = () => {
     const fs = statfsSync(dir);
     const tracked = new Map(
       store.videos().filter((v) => !v.deletedAt).map((v) => [v.filename, v.bytes]),
     );
     let used = [...tracked.values()].reduce((total, bytes) => total + bytes, 0);
+    let orphaned = 0, orphanedBytes = 0;
     for (const entry of readdirSync(join(dir, "videos"), { withFileTypes: true })) {
       if (!entry.isFile()) continue;
       try {
         const size = statSync(join(dir, "videos", entry.name)).size;
         used += Math.max(0, size - (tracked.get(entry.name) ?? 0));
+        if (!tracked.has(entry.name) && entry.name !== activeUpload) {
+          orphaned++;
+          orphanedBytes += size;
+        }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
@@ -226,6 +232,8 @@ export function createApplication(options: ApplicationOptions = {}) {
     return {
       free: fs.bavail * fs.bsize,
       used,
+      orphaned,
+      orphanedBytes,
       reserve,
       budget,
     };
@@ -290,6 +298,7 @@ export function createApplication(options: ApplicationOptions = {}) {
       filename = id + ".mp4",
       temp = join(dir, "videos", id + ".part");
     uploading = true;
+    activeUpload = id + ".part";
     try {
       let bytes = 0;
       const guard = new Transform({
@@ -357,16 +366,18 @@ export function createApplication(options: ApplicationOptions = {}) {
       });
       res.status(201).json({ id });
     } catch {
-      for (const path of [temp, join(dir, "videos", filename)])
-        try {
-          unlinkSync(path);
-        } catch {}
+      // The final file may already be referenced by a committed transaction.
+      // Preserve it even if the caller sees an error; storage accounting includes orphans.
+      try {
+        unlinkSync(temp);
+      } catch {}
       if (!res.headersSent && !res.destroyed)
         res.status(400).json({
           error: "Загрузка не завершена. Проверьте MP4 и свободное место.",
         });
     } finally {
       uploading = false;
+      activeUpload = null;
     }
   });
   app.get("/api/videos/:id/file", (req, res) => {

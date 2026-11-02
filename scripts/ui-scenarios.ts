@@ -10,6 +10,7 @@ export async function uiScenarios(
   const snapshot = structuredClone(original);
   const base = structuredClone(snapshot.videos[0]);
   const now = Date.now();
+  Object.assign(snapshot.storage, { orphaned: 2, orphanedBytes: 1024 });
   snapshot.connections = snapshot.connections.map((c) => ({
     ...c,
     configured: true,
@@ -125,6 +126,7 @@ export async function uiScenarios(
       .click();
   }
   await reload("/?connection_error=1");
+  await expect(page.getByText(/Найдены файлы после прерванной загрузки: 2/)).toBeVisible();
   await expect(page.getByRole("alert")).toBeVisible();
   await page.getByRole("button", { name: "Скрыть ошибку" }).click();
   await page.getByRole("button", { name: "Видео", exact: true }).click();

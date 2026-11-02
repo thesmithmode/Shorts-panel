@@ -123,6 +123,11 @@ export function App() {
                 Видео: {bytes(data.storage.used)} из{" "}
                 {bytes(data.storage.budget)}
               </small>
+              {data.storage.orphaned > 0 ? (
+                <small role="status">
+                  Найдены файлы после прерванной загрузки: {data.storage.orphaned}. Требуется проверка.
+                </small>
+              ) : null}
             </div>
           ) : null}
           <button
