@@ -325,3 +325,34 @@ test("restart schedules a recoverable YouTube session for reconciliation", async
     assert.equal(attempts, 1);
   } finally { store.db.close(); rmSync(dir, { recursive: true }); }
 });
+
+test("interrupted upload schedules session reconciliation without requiring a restart", async () => {
+  const { RetryableSession } = await import("../src/server/contracts.ts");
+  assert.equal(typeof RetryableSession, "function");
+  const dir = mkdtempSync(join(tmpdir(), "shorts-reconcile-live-"));
+  const store = new Store(dir);
+  let clock = parseMoscow("2026-11-02T12:00");
+  let calls = 0;
+  const gateway: PublicationGateway = {
+    connections: () => PLATFORMS.map((platform) => ({ platform, connected: true })),
+    publish: async (_video, d) => {
+      if (d.platform !== "youtube") return;
+      calls++;
+      if (calls === 1) throw new RetryableSession();
+      d.state = "published"; d.successAt = clock; store.delivery(d);
+    },
+    verifyYoutube: async () => {},
+  };
+  try {
+    store.video({ id: "live", title: "live", hashtags: "", filename: "live.mp4", bytes: 1, createdAt: clock, position: 1, scheduledAt: clock, pinned: false, kind: "content", state: "queued", deletedAt: null });
+    const engine = new Engine(store, gateway, () => clock);
+    await engine.tick();
+    assert.equal(store.deliveries().find((d) => d.platform === "youtube")?.state, "failed");
+    await engine.tick();
+    assert.equal(calls, 1);
+    clock += 60_000;
+    await engine.tick();
+    assert.equal(calls, 2);
+    assert.equal(store.deliveries().find((d) => d.platform === "youtube")?.state, "published");
+  } finally { store.db.close(); rmSync(dir, { recursive: true }); }
+});

@@ -8,7 +8,7 @@ import type {
   PublicationGateway,
   Clock,
 } from "./contracts.ts";
-import { RetryableBeforeSend } from "./contracts.ts";
+import { RetryableBeforeSend, RetryableSession } from "./contracts.ts";
 export class Engine {
   running = false;
   constructor(
@@ -141,9 +141,11 @@ export class Engine {
               await this.providers.verifyYoutube(due);
             else await this.providers.publish(v, due);
           } catch (error) {
-            if (error instanceof RetryableBeforeSend) {
+            if (error instanceof RetryableBeforeSend || error instanceof RetryableSession) {
               due.state = "failed";
-              due.error = "Не удалось обновить доступ к площадке. Повторим по расписанию.";
+              due.error = error instanceof RetryableSession
+                ? "Проверим состояние прерванной загрузки по расписанию."
+                : "Не удалось обновить доступ к площадке. Повторим по расписанию.";
               due.nextAt = now < due.originalAt + HOUR
                 ? Math.min(now + 60_000, due.originalAt + HOUR)
                 : recoveryAt(due.originalAt, now, platform, this.store.videos(), all);

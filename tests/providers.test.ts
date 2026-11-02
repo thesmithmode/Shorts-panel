@@ -498,3 +498,41 @@ test("YouTube session recovery validates stored addresses and starts at zero whe
     assert.equal(new Headers(h.calls[1].init?.headers).get("content-range"), "bytes 0-3/4");
   } finally { h.close(); }
 });
+
+test("temporary error after recording YouTube session triggers safe reconciliation", async () => {
+  const { RetryableSession } = await import("../src/server/contracts.ts");
+  assert.equal(typeof RetryableSession, "function");
+  const h = harness();
+  try {
+    h.store.set(tokenKey("youtube"), h.token);
+    h.replies.push({ body: {}, headers: { location: "https://www.googleapis.com/upload/session" } }, { status: 503, body: {} });
+    await assert.rejects(() => h.provider.publish(h.video, h.delivery("youtube")), RetryableSession);
+    assert.equal(h.provider.canRecover(h.delivery("youtube")), true);
+  } finally { h.close(); }
+});
+
+test("temporary YouTube status check error can be retried without another upload", async () => {
+  const { RetryableSession } = await import("../src/server/contracts.ts");
+  const h = harness();
+  try {
+    h.store.set(tokenKey("youtube"), h.token);
+    h.replies.push({ status: 503, body: {} });
+    const d = h.delivery("youtube"); d.externalId = "known-video";
+    await assert.rejects(() => h.provider.verifyYoutube(d), RetryableSession);
+    assert.equal(h.calls.length, 1);
+    assert.ok(h.calls[0].url.includes("videos?"));
+  } finally { h.close(); }
+});
+
+test("Instagram container status lookup failure can be retried without creating a second container", async () => {
+  const { RetryableSession } = await import("../src/server/contracts.ts");
+  const h = harness();
+  try {
+    h.store.set(tokenKey("instagram"), h.token);
+    const d = h.delivery("instagram"); d.externalId = "known-container";
+    h.replies.push({ status: 503, body: {} });
+    await assert.rejects(() => h.provider.publish(h.video, d), RetryableSession);
+    assert.equal(h.calls.length, 1);
+    assert.ok(h.calls[0].url.includes("known-container"));
+  } finally { h.close(); }
+});

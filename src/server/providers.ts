@@ -9,7 +9,7 @@ import {
   type Token,
 } from "./store.ts";
 import type { Platform, Video, Delivery, Connection } from "../shared/model.ts";
-import { RetryableBeforeSend } from "./contracts.ts";
+import { RetryableBeforeSend, RetryableSession } from "./contracts.ts";
 function tokenResponse(value: any): {
   access_token: string;
   expires_in: number;
@@ -27,6 +27,17 @@ function tokenResponse(value: any): {
   return value;
 }
 const IG = "https://graph.instagram.com/v25.0";
+async function sessionFetch(url: string, init: RequestInit): Promise<Response> {
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch (cause) {
+    throw new RetryableSession("Не удалось связаться с сессией загрузки", { cause });
+  }
+  if (response.status === 429 || response.status >= 500)
+    throw new RetryableSession("Временная ошибка сессии загрузки");
+  return response;
+}
 async function json(url: string, init?: RequestInit): Promise<any> {
   const response = await fetch(url, {
     ...init,
@@ -250,7 +261,7 @@ export class Providers {
       let result: any;
       if (location) {
         this.validateYoutubeLocation(location);
-        const probe = await fetch(location, {
+        const probe = await sessionFetch(location, {
           method: "PUT",
           redirect: "error",
           headers: { "Content-Length": "0", "Content-Range": `bytes */${v.bytes}` },
@@ -293,7 +304,7 @@ export class Providers {
         this.store.set(`upload:${v.id}:youtube`, { location });
       }
       if (!result) {
-        const response = await fetch(location!, {
+        const response = await sessionFetch(location!, {
           method: "PUT",
           redirect: "error",
           headers: {
@@ -305,6 +316,7 @@ export class Providers {
           duplex: "half",
           signal: AbortSignal.timeout(15 * 60_000),
         } as any);
+        if (response.status === 308) throw new RetryableSession("Загрузка частично принята");
         if (!response.ok) throw new Error("Не удалось подтвердить загрузку YouTube");
         result = await response.json();
         if (!result.id) throw new Error("Нет ID YouTube");
@@ -325,13 +337,18 @@ export class Providers {
         d.externalId = r.id;
         save();
       }
-      const status = await json(
-        `${IG}/${d.externalId}?` +
-          new URLSearchParams({
-            fields: "status_code",
-            access_token: token.accessToken,
-          }),
-      );
+      let status: any;
+      try {
+        status = await json(
+          `${IG}/${d.externalId}?` +
+            new URLSearchParams({
+              fields: "status_code",
+              access_token: token.accessToken,
+            }),
+        );
+      } catch (cause) {
+        throw new RetryableSession("Не удалось проверить контейнер Instagram", { cause });
+      }
       if (status.status_code === "PUBLISHED") {
         const publishedId = this.store.get<string>(`published:${v.id}:instagram`);
         if (publishedId) d.externalId = publishedId;
@@ -384,15 +401,20 @@ export class Providers {
     await this.verifyYoutube(d, token);
   }
   async verifyYoutube(d: Delivery, token?: Token) {
-    const t = token ?? (await this.token("youtube"));
-    const r = await json(
-      "https://www.googleapis.com/youtube/v3/videos?" +
-        new URLSearchParams({
-          part: "status,processingDetails",
-          id: d.externalId!,
-        }),
-      { headers: { Authorization: `Bearer ${t.accessToken}` } },
-    );
+    let r: any;
+    try {
+      const t = token ?? (await this.token("youtube"));
+      r = await json(
+        "https://www.googleapis.com/youtube/v3/videos?" +
+          new URLSearchParams({
+            part: "status,processingDetails",
+            id: d.externalId!,
+          }),
+        { headers: { Authorization: `Bearer ${t.accessToken}` } },
+      );
+    } catch (cause) {
+      throw new RetryableSession("Не удалось проверить статус YouTube", { cause });
+    }
     const video = r.items?.[0];
     if (!video) throw new Error("Загрузка YouTube не найдена");
     if (
