@@ -422,3 +422,79 @@ test("token refresh failure before a new upload is explicitly safe to retry", as
     assert.equal(h.calls.length, 1);
   } finally { h.close(); }
 });
+
+test("YouTube resumes an interrupted session from the server-confirmed byte", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("youtube"), h.token);
+    h.store.set("upload:v:youtube", { location: "https://www.googleapis.com/upload/session" });
+    h.replies.push(
+      { status: 308, body: {}, headers: { range: "bytes=0-1" } },
+      { body: { id: "yt-resumed" } },
+      { body: { items: [{ status: { uploadStatus: "processed", privacyStatus: "public" } }] } },
+    );
+    const d = h.delivery("youtube");
+    await h.provider.publish(h.video, d);
+    assert.equal(d.state, "published");
+    assert.equal(h.calls[0].init?.method, "PUT");
+    assert.equal(new Headers(h.calls[0].init?.headers).get("content-range"), "bytes */4");
+    assert.equal(new Headers(h.calls[1].init?.headers).get("content-range"), "bytes 2-3/4");
+    assert.equal(new Headers(h.calls[1].init?.headers).get("content-length"), "2");
+  } finally { h.close(); }
+});
+
+test("YouTube recovers the ID from a completed session without uploading twice", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("youtube"), h.token);
+    h.store.set("upload:v:youtube", { location: "https://www.googleapis.com/upload/session" });
+    h.replies.push({ body: { id: "yt-existing" } }, { body: { items: [{ status: { uploadStatus: "processed", privacyStatus: "public" } }] } });
+    const d = h.delivery("youtube");
+    await h.provider.publish(h.video, d);
+    assert.equal(d.externalId, "yt-existing");
+    assert.equal(h.calls.length, 2);
+    assert.equal(new Headers(h.calls[0].init?.headers).get("content-range"), "bytes */4");
+  } finally { h.close(); }
+});
+
+test("expired YouTube session never silently starts a new upload", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("youtube"), h.token);
+    h.store.set("upload:v:youtube", { location: "https://www.googleapis.com/upload/session" });
+    h.replies.push({ status: 404, body: {} });
+    await assert.rejects(() => h.provider.publish(h.video, h.delivery("youtube")));
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0].init?.method, "PUT");
+  } finally { h.close(); }
+});
+
+for (const range of ["bytes=1-2", "bytes=0-3", "bytes=0-99999999999999999"]) {
+  test(`YouTube refuses invalid resume range ${range}`, async () => {
+    const h = harness();
+    try {
+      h.store.set(tokenKey("youtube"), h.token);
+      h.store.set("upload:v:youtube", { location: "https://www.googleapis.com/upload/session" });
+      h.replies.push({ status: 308, body: {}, headers: { range } });
+      await assert.rejects(() => h.provider.publish(h.video, h.delivery("youtube")));
+      assert.equal(h.calls.length, 1);
+    } finally { h.close(); }
+  });
+}
+
+test("YouTube session recovery validates stored addresses and starts at zero when no bytes were acknowledged", async () => {
+  const h = harness();
+  try {
+    const d = h.delivery("youtube");
+    assert.equal(h.provider.canRecover(d), false);
+    h.store.set("upload:v:youtube", { location: "https://evil.invalid/upload" });
+    assert.equal(h.provider.canRecover(d), false);
+    assert.equal(h.provider.canRecover(h.delivery("instagram")), false);
+    h.store.set("upload:v:youtube", { location: "https://www.googleapis.com/upload/session" });
+    assert.equal(h.provider.canRecover(d), true);
+    h.store.set(tokenKey("youtube"), h.token);
+    h.replies.push({ status: 308, body: {} }, { body: { id: "yt-id" } }, { body: { items: [{ status: { uploadStatus: "processed", privacyStatus: "public" } }] } });
+    await h.provider.publish(h.video, d);
+    assert.equal(new Headers(h.calls[1].init?.headers).get("content-range"), "bytes 0-3/4");
+  } finally { h.close(); }
+});

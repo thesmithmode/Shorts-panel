@@ -218,6 +218,22 @@ export class Providers {
       .digest("hex");
     return `${this.origin}/media/${videoId}?expires=${expires}&signature=${sig}`;
   }
+  private validateYoutubeLocation(location: string) {
+    const url = new URL(location);
+    if (url.hostname !== "www.googleapis.com" || url.protocol !== "https:" || url.username || url.password || url.port)
+      throw new Error("Некорректный адрес загрузки");
+  }
+  canRecover(d: Delivery) {
+    if (d.platform !== "youtube") return false;
+    const session = this.store.get<{ location?: unknown }>(`upload:${d.videoId}:youtube`);
+    if (typeof session?.location !== "string") return false;
+    try {
+      this.validateYoutubeLocation(session.location);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   async publish(v: Video, d: Delivery): Promise<void> {
     let token: Token;
     try {
@@ -227,52 +243,72 @@ export class Providers {
     }
     const save = () => this.store.delivery(d);
     if (d.platform === "youtube") {
-      // Persist resumable session before uploading. Never retry an ambiguous final upload.
-      const init = await fetch(
-        "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token.accessToken}`,
-            "Content-Type": "application/json",
-            "X-Upload-Content-Type": "video/mp4",
-            "X-Upload-Content-Length": String(v.bytes),
-          },
-          body: JSON.stringify({
-            snippet: {
-              title: v.title,
-              description: v.hashtags,
-              categoryId: "22",
-            },
-            status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
-          }),
+      // A recorded session may already have completed. Probe it before sending bytes.
+      const stored = this.store.get<{ location: string }>(`upload:${v.id}:youtube`);
+      let location = stored?.location;
+      let offset = 0;
+      let result: any;
+      if (location) {
+        this.validateYoutubeLocation(location);
+        const probe = await fetch(location, {
+          method: "PUT",
+          redirect: "error",
+          headers: { "Content-Length": "0", "Content-Range": `bytes */${v.bytes}` },
           signal: AbortSignal.timeout(45_000),
-        },
-      );
-      const location = init.headers.get("location");
-      if (!init.ok || !location) throw new Error("YouTube не создал загрузку");
-      if (
-        new URL(location).hostname !== "www.googleapis.com" ||
-        new URL(location).protocol !== "https:"
-      )
-        throw new Error("Некорректный адрес загрузки");
-      this.store.set(`upload:${v.id}:youtube`, { location });
-      const response = await fetch(location, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "video/mp4",
-          "Content-Length": String(v.bytes),
-        },
-        body: createReadStream(
-          join(this.store.dir, "videos", v.filename),
-        ) as any,
-        duplex: "half",
-        signal: AbortSignal.timeout(15 * 60_000),
-      } as any);
-      if (!response.ok)
-        throw new Error("Не удалось подтвердить загрузку YouTube");
-      const result = (await response.json()) as any;
-      if (!result.id) throw new Error("Нет ID YouTube");
+        });
+        if (probe.status === 308) {
+          const range = probe.headers.get("range");
+          if (range) {
+            const match = /^bytes=0-(\d+)$/.exec(range);
+            if (!match) throw new Error("Некорректное смещение загрузки YouTube");
+            offset = Number(match[1]) + 1;
+            if (!Number.isSafeInteger(offset) || offset >= v.bytes)
+              throw new Error("Некорректное смещение загрузки YouTube");
+          }
+        } else if (probe.ok) {
+          result = await probe.json();
+          if (!result?.id) throw new Error("Нет ID YouTube");
+        } else throw new Error("Не удалось восстановить загрузку YouTube");
+      } else {
+        const init = await fetch(
+          "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token.accessToken}`,
+              "Content-Type": "application/json",
+              "X-Upload-Content-Type": "video/mp4",
+              "X-Upload-Content-Length": String(v.bytes),
+            },
+            body: JSON.stringify({
+              snippet: { title: v.title, description: v.hashtags, categoryId: "22" },
+              status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
+            }),
+            signal: AbortSignal.timeout(45_000),
+          },
+        );
+        location = init.headers.get("location") ?? undefined;
+        if (!init.ok || !location) throw new Error("YouTube не создал загрузку");
+        this.validateYoutubeLocation(location);
+        this.store.set(`upload:${v.id}:youtube`, { location });
+      }
+      if (!result) {
+        const response = await fetch(location!, {
+          method: "PUT",
+          redirect: "error",
+          headers: {
+            "Content-Type": "video/mp4",
+            "Content-Length": String(v.bytes - offset),
+            ...(stored ? { "Content-Range": `bytes ${offset}-${v.bytes - 1}/${v.bytes}` } : {}),
+          },
+          body: createReadStream(join(this.store.dir, "videos", v.filename), { start: offset }) as any,
+          duplex: "half",
+          signal: AbortSignal.timeout(15 * 60_000),
+        } as any);
+        if (!response.ok) throw new Error("Не удалось подтвердить загрузку YouTube");
+        result = await response.json();
+        if (!result.id) throw new Error("Нет ID YouTube");
+      }
       d.externalId = result.id;
       save();
     } else if (d.platform === "instagram") {

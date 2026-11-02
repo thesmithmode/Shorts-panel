@@ -304,3 +304,24 @@ test("safe pre-send failures retry within grace and move to recovery after the d
     rmSync(dir, { recursive: true });
   }
 });
+
+test("restart schedules a recoverable YouTube session for reconciliation", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shorts-reconcile-"));
+  const store = new Store(dir);
+  const clock = parseMoscow("2026-11-02T12:00");
+  let attempts = 0;
+  const gateway: PublicationGateway = {
+    connections: () => PLATFORMS.map((platform) => ({ platform, connected: true })),
+    canRecover: (d) => d.platform === "youtube",
+    publish: async () => { attempts++; },
+    verifyYoutube: async () => {},
+  };
+  try {
+    store.video({ id: "resume", title: "resume", hashtags: "", filename: "resume.mp4", bytes: 1, createdAt: clock, position: 1, scheduledAt: clock, pinned: false, kind: "content", state: "dispatched", deletedAt: null });
+    store.delivery({ videoId: "resume", platform: "youtube", state: "processing", originalAt: clock, nextAt: clock, successAt: null, externalId: null, url: null, error: null, attempts: 1 });
+    const engine = new Engine(store, gateway, () => clock);
+    assert.equal(store.deliveries()[0].state, "pending");
+    await engine.tick();
+    assert.equal(attempts, 1);
+  } finally { store.db.close(); rmSync(dir, { recursive: true }); }
+});

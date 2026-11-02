@@ -13,6 +13,7 @@ export interface QueueRepository {
 /** Publishing capabilities used by the worker; OAuth configuration is not its concern. */
 export interface PublicationGateway {
   connections(): { platform: Platform; connected: boolean }[];
+  canRecover?(delivery: Delivery): boolean;
   publish(video: Video, delivery: Delivery): Promise<void>;
   verifyYoutube(delivery: Delivery): Promise<void>;
 }

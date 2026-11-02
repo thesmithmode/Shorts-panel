@@ -20,9 +20,14 @@ export class Engine {
     for (const d of store.deliveries())
       if (d.state === "processing") {
         if (!d.externalId) {
-          d.state = "unknown";
-          d.error =
-            "Сервер перезапущен во время отправки. Проверьте публикацию перед повтором.";
+          if (providers.canRecover?.(d)) {
+            d.state = "pending";
+            d.error = "Восстанавливаем прерванную загрузку.";
+          } else {
+            d.state = "unknown";
+            d.error =
+              "Сервер перезапущен во время отправки. Проверьте публикацию перед повтором.";
+          }
           store.delivery(d);
         }
       }
