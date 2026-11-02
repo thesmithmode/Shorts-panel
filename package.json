@@ -15,6 +15,7 @@
     "start": "node --import tsx src/server/index.ts",
     "check": "tsc --noEmit",
     "provision": "node --import tsx scripts/provision.ts",
+    "backup": "node --import tsx scripts/backup.ts",
     "coverage": "node --import tsx scripts/coverage.ts",
     "coverage:report": "node --import tsx scripts/coverage.ts --report-only"
   },
