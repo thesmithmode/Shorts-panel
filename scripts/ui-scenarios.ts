@@ -1,6 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 import type { Snapshot } from "../src/shared/model.ts";
-import { DAY, moscowDate } from "../src/shared/scheduler.ts";
+import { DAY, HOUR, dayStart, moscowDate } from "../src/shared/scheduler.ts";
 export async function uiScenarios(
   page: Page,
   original: Snapshot,
@@ -36,8 +36,8 @@ export async function uiScenarios(
         videoId: "sent",
         platform: (["youtube", "instagram", "tiktok"] as const)[i],
         state: state as any,
-        originalAt: now,
-        nextAt: now + DAY,
+        originalAt: dayStart(now) - DAY,
+        nextAt: dayStart(now) + HOUR,
         successAt: null,
         externalId: null,
         url: null,
@@ -224,7 +224,11 @@ export async function uiScenarios(
   await expect(
     page.getByRole("heading", { name: "Календарь", exact: true }),
   ).toBeVisible();
+  await expect(page.getByRole("button", { name: /Догоняющая публикация Instagram.*Ролик с ошибкой/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Догоняющая публикация TikTok.*Ролик с ошибкой/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Догоняющая публикация YouTube.*Ролик с ошибкой/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Месяц", exact: true }).click();
+  await expect(page.getByRole("button", { name: /Догоняющая публикация Instagram.*Ролик с ошибкой/ })).toBeVisible();
   await page.getByRole("button", { name: "Предыдущий период" }).click();
   await page.getByRole("button", { name: "Следующий период" }).click();
   await page.locator(".day-number").first().click();

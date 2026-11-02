@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight, Pin } from "lucide-react";
 import { useMemo } from "react";
 import type { Snapshot } from "../shared/model.ts";
-import { DAY, dayStart, MOSCOW } from "../shared/scheduler.ts";
+import { DAY, HOUR, dayStart, MOSCOW } from "../shared/scheduler.ts";
 import { date, time, names } from "./format.ts";
 type Item = Snapshot["videos"][number];
 export type View = "day" | "week" | "month";
@@ -51,15 +51,23 @@ export function Calendar({
     const offset = (new Date(first + MOSCOW).getUTCDay() + 6) % 7;
     return Array.from({ length: 42 }, (_, i) => first + (i - offset) * DAY);
   }, [view, anchor]);
-  const events = videos.filter((v) => v.scheduledAt !== null);
+  const events = videos.flatMap((video) => [
+    ...(video.scheduledAt === null ? [] : [{ video, at: video.scheduledAt, platform: null }]),
+    ...video.deliveries
+      .filter((delivery) =>
+        ["pending", "failed", "blocked"].includes(delivery.state) &&
+        delivery.nextAt >= delivery.originalAt + HOUR,
+      )
+      .map((delivery) => ({ video, at: delivery.nextAt, platform: delivery.platform })),
+  ]);
   const hours = Array.from(
     new Set([
       "06:00",
       "12:00",
       "17:00",
       ...events
-        .filter((v) => days.includes(dayStart(v.scheduledAt!)))
-        .map((v) => time(v.scheduledAt!)),
+        .filter((event) => days.includes(dayStart(event.at)))
+        .map((event) => time(event.at)),
     ]),
   ).sort();
   function move(direction: number) {
@@ -132,15 +140,16 @@ export function Calendar({
                 {date(day, { day: "numeric" })}
               </button>
               {events
-                .filter((v) => dayStart(v.scheduledAt!) === day)
-                .sort((a, b) => a.scheduledAt! - b.scheduledAt!)
-                .map((v) => (
+                .filter((event) => dayStart(event.at) === day)
+                .sort((a, b) => a.at - b.at)
+                .map(({ video: v, at, platform }) => (
                   <button
                     className="month-event"
-                    key={v.id}
+                    key={`${v.id}:${platform ?? "plan"}`}
+                    aria-label={platform ? `Догоняющая публикация ${names[platform]} · ${v.title}` : undefined}
                     onClick={() => onSelect(v)}
                   >
-                    <time>{time(v.scheduledAt!)}</time> {v.title}
+                    <time>{time(at)}</time> {platform ? `${names[platform]} · ` : ""}{v.title}
                   </button>
                 ))}
             </section>
@@ -171,18 +180,19 @@ export function Calendar({
                   >
                     {events
                       .filter(
-                        (v) =>
-                          dayStart(v.scheduledAt!) === day &&
-                          time(v.scheduledAt!) === hour,
+                        (event) =>
+                          dayStart(event.at) === day &&
+                          time(event.at) === hour,
                       )
-                      .map((v) => (
+                      .map(({ video: v, platform }) => (
                         <button
+                          aria-label={platform ? `Догоняющая публикация ${names[platform]} · ${v.title}` : undefined}
                           className={
                             "calendar-event " +
                             (v.pinned ? "pinned " : "") +
                             (v.kind === "extra" ? "extra" : "")
                           }
-                          key={v.id}
+                          key={`${v.id}:${platform ?? "plan"}`}
                           onClick={() => onSelect(v)}
                         >
                           <div className="event-time">
@@ -190,7 +200,7 @@ export function Calendar({
                             {v.pinned ? <Pin size={12} /> : null}
                           </div>
                           <strong>{v.title}</strong>
-                          <Platforms video={v} />
+                          {platform ? <span>Догоняющая · {names[platform]}</span> : <Platforms video={v} />}
                         </button>
                       ))}
                   </div>
