@@ -128,6 +128,11 @@ export function App() {
                   Найдены файлы после прерванной загрузки: {data.storage.orphaned}. Требуется проверка.
                 </small>
               ) : null}
+              {data.storage.missing > 0 ? (
+                <small role="status">
+                  Не найдены файлы роликов: {data.storage.missing}. Требуется восстановление.
+                </small>
+              ) : null}
             </div>
           ) : null}
           <button

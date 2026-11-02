@@ -44,6 +44,6 @@ export interface Connection {
 export interface Snapshot {
   videos: (Video & { deliveries: Delivery[] })[];
   connections: Connection[];
-  storage: { free: number; used: number; reserve: number; budget: number; orphaned: number; orphanedBytes: number };
+  storage: { free: number; used: number; reserve: number; budget: number; orphaned: number; orphanedBytes: number; missing: number };
   csrf: string;
 }

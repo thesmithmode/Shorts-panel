@@ -216,10 +216,12 @@ export function createApplication(options: ApplicationOptions = {}) {
     );
     let used = [...tracked.values()].reduce((total, bytes) => total + bytes, 0);
     let orphaned = 0, orphanedBytes = 0;
+    const present = new Set<string>();
     for (const entry of readdirSync(join(dir, "videos"), { withFileTypes: true })) {
       if (!entry.isFile()) continue;
       try {
         const size = statSync(join(dir, "videos", entry.name)).size;
+        present.add(entry.name);
         used += Math.max(0, size - (tracked.get(entry.name) ?? 0));
         if (!tracked.has(entry.name) && entry.name !== activeUpload) {
           orphaned++;
@@ -234,6 +236,7 @@ export function createApplication(options: ApplicationOptions = {}) {
       used,
       orphaned,
       orphanedBytes,
+      missing: [...tracked.keys()].filter((filename) => !present.has(filename)).length,
       reserve,
       budget,
     };

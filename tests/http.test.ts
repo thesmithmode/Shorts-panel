@@ -626,3 +626,17 @@ test("storage reports abandoned files without revealing their names or counting 
     assert.ok(!JSON.stringify(storage).includes("unrecorded.mp4"));
   } finally { await h.close(); }
 });
+
+test("storage reports missing queued originals and clears the warning when the file returns", async () => {
+  const h = await fixture();
+  try {
+    await h.login();
+    h.video("missing");
+    let storage = ((await (await h.req("/api/state")).json()) as any).storage;
+    assert.equal(storage.missing, 1);
+    assert.ok(!JSON.stringify(storage).includes("missing.mp4"));
+    writeFileSync(join(h.dir, "videos", "missing.mp4"), "1234");
+    storage = ((await (await h.req("/api/state")).json()) as any).storage;
+    assert.equal(storage.missing, 0);
+  } finally { await h.close(); }
+});
