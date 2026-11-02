@@ -1,5 +1,5 @@
 import { createApplication } from "./app.ts";
-const { app, store, engine } = createApplication();
+const { app, engine } = createApplication();
 const port = Number(process.env.PORT ?? 47921);
 const host = process.env.SHORTS_BIND ?? "127.0.0.1";
 const server = app.listen(port, host, () =>

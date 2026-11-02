@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -515,4 +515,9 @@ test("upload budget refuses new data without deleting queued originals", async (
   } finally {
     await h.close();
   }
+});
+
+
+test('state reads deliveries once regardless of queue size',async()=>{
+ const h=await fixture();try{await h.login();for(let i=0;i<8;i++)h.video('video'+i);const spy=mock.method(h.store,'deliveries');const response=await h.req('/api/state');assert.equal(response.status,200);assert.equal((await response.json() as any).videos.length,8);assert.equal(spy.mock.callCount(),1);}finally{await h.close();}
 });

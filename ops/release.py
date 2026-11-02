@@ -3,7 +3,6 @@
 No generic shell execution, package installation, or edits to proxy/firewall.
 """
 import fcntl
-import io
 import os
 from pathlib import Path, PurePosixPath
 import re

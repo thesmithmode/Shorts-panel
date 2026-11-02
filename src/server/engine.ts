@@ -1,5 +1,6 @@
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { groupDeliveries } from "../shared/deliveries.ts";
 import { PLATFORMS } from "../shared/model.ts";
 import { plan, recoveryAt, deletionAt, HOUR } from "../shared/scheduler.ts";
 import type {
@@ -29,7 +30,7 @@ export class Engine {
     const videos = this.store.videos();
     const assignments = plan(videos, now, preserveHead);
     for (const v of videos)
-      if (assignments.has(v.id)) {
+      if (assignments.has(v.id) && assignments.get(v.id) !== v.scheduledAt) {
         v.scheduledAt = assignments.get(v.id)!;
         this.store.video(v);
       }
@@ -50,7 +51,7 @@ export class Engine {
               platform,
               state: "pending",
               originalAt: v.scheduledAt,
-              nextAt: now,
+              nextAt: v.scheduledAt,
               successAt: null,
               externalId: null,
               url: null,
@@ -141,8 +142,9 @@ export class Engine {
           }
         }),
       );
+      const deliveriesByVideo = groupDeliveries(this.store.deliveries());
       for (const v of this.store.videos()) {
-        const ds = this.store.deliveries().filter((d) => d.videoId === v.id);
+        const ds = deliveriesByVideo.get(v.id) ?? [];
         const removeAt = deletionAt(ds);
         if (removeAt !== null) {
           if (v.state !== "published") {

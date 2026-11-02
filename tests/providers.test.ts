@@ -408,3 +408,5 @@ for (const response of [
       }
     },
   );
+
+test('Instagram already published container becomes confirmed without publishing again',async()=>{const h=harness();try{h.store.set(tokenKey('instagram'),h.token);const d=h.delivery('instagram');d.externalId='container';h.store.set('published:v:instagram','post-id');h.replies.push({body:{status_code:'PUBLISHED'}});await h.provider.publish(h.video,d);assert.equal(d.state,'published');assert.equal(d.externalId,'post-id');assert.ok(d.successAt);assert.equal(h.calls.length,1);}finally{h.close();}});

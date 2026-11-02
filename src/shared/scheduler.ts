@@ -66,7 +66,6 @@ export function plan(
     slots: number[];
     count: number;
     assigned: number;
-    fixedTimes: number[];
   }[] = [];
   const remaining = automatic.filter((v) => !result.has(v.id));
   const earliest =
@@ -86,7 +85,6 @@ export function plan(
       ),
       count: onDay.filter((a) => a.counts).length,
       assigned: 0,
-      fixedTimes,
     });
   }
   let left = remaining.length;

@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight, Pin } from "lucide-react";
 import { useMemo } from "react";
 import type { Snapshot } from "../shared/model.ts";
-import { DAY, dayStart, moscowDate, MOSCOW } from "../shared/scheduler.ts";
+import { DAY, dayStart, MOSCOW } from "../shared/scheduler.ts";
 import { date, time, names } from "./format.ts";
 type Item = Snapshot["videos"][number];
 export type View = "day" | "week" | "month";

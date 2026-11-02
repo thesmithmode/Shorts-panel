@@ -26,6 +26,7 @@ import { pipeline } from "node:stream/promises";
 import { Store, passwordCheck, configKey, tokenKey } from "./store.ts";
 import { Providers } from "./providers.ts";
 import { Engine } from "./engine.ts";
+import { groupDeliveries } from "../shared/deliveries.ts";
 import { PLATFORMS, type Platform, type Video } from "../shared/model.ts";
 import { parseMoscow, recoveryAt } from "../shared/scheduler.ts";
 import { validateVideoMetadata } from "./media.ts";
@@ -72,7 +73,7 @@ export function createApplication(options: ApplicationOptions = {}) {
   const engine = new Engine(store, providers);
   const app = express();
   app.disable("x-powered-by");
-  app.use((req, res, next) => {
+  app.use((_req, res, next) => {
     res.set({
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
@@ -217,20 +218,15 @@ export function createApplication(options: ApplicationOptions = {}) {
       budget,
     };
   };
-  app.get("/api/state", (_req, res) =>
+  app.get("/api/state", (_req, res) => {
+    const deliveriesByVideo = groupDeliveries(store.deliveries());
     res.json({
-      videos: store
-        .videos()
-        .sort((a, b) => a.position - b.position)
-        .map((v) => ({
-          ...v,
-          deliveries: store.deliveries().filter((d) => d.videoId === v.id),
-        })),
+      videos: store.videos().sort((a, b) => a.position - b.position).map(v => ({...v, deliveries: deliveriesByVideo.get(v.id) ?? []})),
       connections: providers.connections(),
       storage: storage(),
       csrf: res.locals.session.csrf,
-    }),
-  );
+    });
+  });
   app.post("/api/logout", (_req, res) => {
     store.db
       .prepare("DELETE FROM sessions WHERE hash=?")

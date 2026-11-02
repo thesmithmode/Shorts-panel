@@ -257,3 +257,10 @@ test("overlapping worker ticks never dispatch the same video twice", async () =>
     rmSync(dir, { recursive: true });
   }
 });
+
+test('restart after grace window schedules backlog rather than sending immediately', async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'shorts-late-')),store=new Store(dir);const now=parseMoscow('2026-11-02T14:00');let calls=0;
+ const gateway:PublicationGateway={connections:()=>PLATFORMS.map(platform=>({platform,connected:true})),publish:async()=>{calls++;},verifyYoutube:async()=>{}};
+ try {store.video({id:'late',title:'late',hashtags:'',filename:'late.mp4',bytes:1,createdAt:1,position:1,scheduledAt:parseMoscow('2026-11-02T12:00'),pinned:false,kind:'content',state:'queued',deletedAt:null});await new Engine(store,gateway,()=>now).tick();assert.equal(calls,0);assert.ok(store.deliveries().every(d=>d.nextAt>now));}
+ finally{store.db.close();rmSync(dir,{recursive:true});}
+});

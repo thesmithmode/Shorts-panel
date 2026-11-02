@@ -290,6 +290,15 @@ export class Providers {
             access_token: token.accessToken,
           }),
       );
+      if (status.status_code === "PUBLISHED") {
+        const publishedId = this.store.get<string>(`published:${v.id}:instagram`);
+        if (publishedId) d.externalId = publishedId;
+        d.state = "published";
+        d.successAt = Date.now();
+        d.error = null;
+        save();
+        return;
+      }
       if (status.status_code !== "FINISHED") {
         if (status.status_code === "ERROR" || status.status_code === "EXPIRED")
           throw new Error("Instagram не обработал видео");
