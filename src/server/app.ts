@@ -505,16 +505,20 @@ export function createApplication(options: ApplicationOptions = {}) {
         .json({ error: "Сначала убедитесь, что пост не появился на площадке" });
     if (d.state === "processing")
       return res.status(409).json({ error: "Площадка обрабатывает видео" });
-    d.state = "pending";
-    d.error = null;
-    d.nextAt = recoveryAt(
-      d.originalAt,
-      Date.now(),
-      d.platform,
-      store.videos(),
-      store.deliveries(),
-    );
-    store.delivery(d);
+    store.transaction(() => {
+      if (d.state === "unknown" && d.platform === "instagram")
+        store.set(`publishing:${d.videoId}:instagram`, null);
+      d.state = "pending";
+      d.error = null;
+      d.nextAt = recoveryAt(
+        d.originalAt,
+        Date.now(),
+        d.platform,
+        store.videos(),
+        store.deliveries(),
+      );
+      store.delivery(d);
+    });
     res.json({ ok: true });
   });
   app.use(express.static(resolve("dist")));

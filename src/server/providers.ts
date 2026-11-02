@@ -366,13 +366,23 @@ export class Providers {
         save();
         return;
       }
-      const published = await json(`${IG}/${token.accountId}/media_publish`, {
-        method: "POST",
-        body: new URLSearchParams({
-          creation_id: d.externalId!,
-          access_token: token.accessToken,
-        }),
-      });
+      const publishingKey = `publishing:${v.id}:instagram`;
+      if (this.store.get<boolean>(publishingKey))
+        throw new Error("Instagram ещё не подтвердил результат публикации");
+      // Persist before the request: a crash must never cause a blind second post.
+      this.store.set(publishingKey, true);
+      let published: any;
+      try {
+        published = await json(`${IG}/${token.accountId}/media_publish`, {
+          method: "POST",
+          body: new URLSearchParams({
+            creation_id: d.externalId!,
+            access_token: token.accessToken,
+          }),
+        });
+      } catch (cause) {
+        throw new RetryableSession("Проверим результат публикации Instagram", { cause });
+      }
       this.store.set(`published:${v.id}:instagram`, published.id);
       if (typeof published.id !== "string" || !published.id)
         throw new Error("Instagram не подтвердил ID публикации");

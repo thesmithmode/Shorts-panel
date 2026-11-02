@@ -546,3 +546,16 @@ test("storage counts each recorded file once and protects against larger actual 
     assert.equal(((await response.json()) as any).storage.used, 10);
   } finally { await h.close(); }
 });
+
+test("Instagram ambiguous publish marker is cleared only after explicit no-post confirmation", async () => {
+  const h = await fixture();
+  try {
+    await h.login(); h.video();
+    h.store.delivery({ videoId: "v", platform: "instagram", state: "unknown", originalAt: Date.now(), nextAt: Date.now(), successAt: null, externalId: "container", url: null, error: "ambiguous", attempts: 1 });
+    h.store.set("publishing:v:instagram", true);
+    assert.equal((await h.req("/api/deliveries/v/instagram/retry", {})).status, 409);
+    assert.equal(h.store.get("publishing:v:instagram"), true);
+    assert.equal((await h.req("/api/deliveries/v/instagram/retry", { confirmNoPost: true })).status, 200);
+    assert.equal(h.store.get("publishing:v:instagram"), null);
+  } finally { await h.close(); }
+});

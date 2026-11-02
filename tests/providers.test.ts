@@ -536,3 +536,30 @@ test("Instagram container status lookup failure can be retried without creating 
     assert.ok(h.calls[0].url.includes("known-container"));
   } finally { h.close(); }
 });
+
+test("ambiguous Instagram publish is reconciled through the existing container without posting twice", async () => {
+  const { RetryableSession } = await import("../src/server/contracts.ts");
+  const h = harness();
+  try {
+    h.store.set(tokenKey("instagram"), h.token);
+    const d = h.delivery("instagram"); d.externalId = "container";
+    h.replies.push({ body: { status_code: "FINISHED" } }, { status: 503, body: {} });
+    await assert.rejects(() => h.provider.publish(h.video, d), RetryableSession);
+    h.replies.push({ body: { status_code: "PUBLISHED" } });
+    await h.provider.publish(h.video, d);
+    assert.equal(d.state, "published");
+    assert.equal(h.calls.filter((call) => call.url.includes("media_publish")).length, 1);
+  } finally { h.close(); }
+});
+
+test("unconfirmed Instagram publish never repeats even when container remains finished", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("instagram"), h.token);
+    h.store.set("publishing:v:instagram", true);
+    const d = h.delivery("instagram"); d.externalId = "container";
+    h.replies.push({ body: { status_code: "FINISHED" } });
+    await assert.rejects(() => h.provider.publish(h.video, d));
+    assert.equal(h.calls.length, 1);
+  } finally { h.close(); }
+});
