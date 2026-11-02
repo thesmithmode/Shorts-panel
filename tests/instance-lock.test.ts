@@ -29,6 +29,7 @@ test("second server with the same data directory stops before starting its worke
   const env = { ...process.env, SHORTS_DATA_DIR: dir, SHORTS_PUBLIC_ORIGIN: "http://127.0.0.1:5173", PORT: "0" };
   const first = spawn(process.execPath, ["--import", "tsx", "src/server/index.ts"], { env });
   let second: ReturnType<typeof spawn> | undefined;
+  let restarted: ReturnType<typeof spawn> | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
       first.stdout!.on("data", (chunk: Buffer) => { if (chunk.toString().includes("listening")) resolve(); });
@@ -42,10 +43,19 @@ test("second server with the same data directory stops before starting its worke
     ]);
     assert.notEqual(result, null, "second server must fail immediately");
     assert.notEqual(result, 0);
+    first.kill("SIGKILL");
+    await once(first, "exit");
+    restarted = spawn(process.execPath, ["--import", "tsx", "src/server/index.ts"], { env });
+    await new Promise<void>((resolve, reject) => {
+      restarted!.stdout!.on("data", (chunk: Buffer) => { if (chunk.toString().includes("listening")) resolve(); });
+      restarted!.once("error", reject);
+      restarted!.once("exit", (code) => reject(new Error(`restart exited: ${code}`)));
+    });
   } finally {
+    if (restarted?.exitCode === null) restarted.kill("SIGTERM");
     if (second?.exitCode === null) second.kill("SIGTERM");
     if (first.exitCode === null) first.kill("SIGTERM");
-    await Promise.all([first, ...(second ? [second] : [])].map((child) => child.exitCode === null ? once(child, "exit").catch(() => {}) : Promise.resolve()));
+    await Promise.all([first, ...(second ? [second] : []), ...(restarted ? [restarted] : [])].map((child) => child.exitCode === null && child.signalCode === null ? once(child, "exit").catch(() => {}) : Promise.resolve()));
     rmSync(dir, { recursive: true });
   }
 });
