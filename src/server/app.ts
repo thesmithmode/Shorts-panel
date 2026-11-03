@@ -14,7 +14,6 @@ import {
   unlinkSync,
   statfsSync,
   openSync,
-  readSync,
   closeSync,
   fsyncSync,
   readdirSync,
@@ -22,8 +21,6 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { Transform } from "node:stream";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { pipeline } from "node:stream/promises";
 import { Store, passwordCheck, configKey, tokenKey } from "./store.ts";
 import { Providers } from "./providers.ts";
@@ -31,7 +28,7 @@ import { Engine } from "./engine.ts";
 import { groupDeliveries } from "../shared/deliveries.ts";
 import { PLATFORMS, type Platform, type Video } from "../shared/model.ts";
 import { parseMoscow, recoveryAt } from "../shared/scheduler.ts";
-import { validateVideoMetadata } from "./media.ts";
+import { inspectVideoFile } from "./media.ts";
 import { releaseIdentity } from "./health.ts";
 export interface ApplicationOptions {
   env?: NodeJS.ProcessEnv;
@@ -323,29 +320,11 @@ export function createApplication(options: ApplicationOptions = {}) {
       if (bytes !== size) throw new Error("Неполная загрузка");
       const fd = openSync(temp, "r");
       try {
-        const head = Buffer.alloc(12);
-        readSync(fd, head, 0, 12, 0);
-        if (head.toString("ascii", 4, 8) !== "ftyp") throw new Error("Не MP4");
         fsyncSync(fd);
       } finally {
         closeSync(fd);
       }
-      const probe = await promisify(execFile)(
-        "ffprobe",
-        [
-          "-v",
-          "error",
-          "-protocol_whitelist",
-          "file",
-          "-show_entries",
-          "stream=codec_type,width,height:format=duration",
-          "-of",
-          "json",
-          temp,
-        ],
-        { timeout: 15_000, maxBuffer: 64 * 1024 },
-      );
-      validateVideoMetadata(JSON.parse(probe.stdout));
+      await inspectVideoFile(temp);
       renameSync(temp, join(dir, "videos", filename));
       engine.claim();
       store.transaction(() => {
@@ -480,8 +459,10 @@ export function createApplication(options: ApplicationOptions = {}) {
       clientSecret.length > 1000
     )
       return res.status(400).json({ error: "Нужны Client ID и Client Secret" });
-    store.set(configKey(p), { clientId: clientId.trim(), clientSecret });
-    store.set(tokenKey(p), null);
+    store.transaction(() => {
+      store.set(configKey(p), { clientId: clientId.trim(), clientSecret });
+      store.set(tokenKey(p), null);
+    });
     res.json({ ok: true });
   });
   app.post("/api/connections/:platform/connect", (req, res) => {
@@ -522,6 +503,13 @@ export function createApplication(options: ApplicationOptions = {}) {
     if (d.state === "processing")
       return res.status(409).json({ error: "Площадка обрабатывает видео" });
     store.transaction(() => {
+      if (d.state === "unknown" && d.restartRequired) {
+        if (d.platform === "youtube") store.set(`upload:${d.videoId}:youtube`, null);
+        if (d.platform === "instagram") store.set(`published:${d.videoId}:instagram`, null);
+        d.externalId = null;
+        d.url = null;
+        d.restartRequired = false;
+      }
       if (d.state === "unknown" && d.platform === "youtube" && !d.externalId &&
           store.get<{ expired?: boolean }>(`upload:${d.videoId}:youtube`)?.expired)
         store.set(`upload:${d.videoId}:youtube`, null);

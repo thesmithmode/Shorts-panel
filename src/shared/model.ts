@@ -32,6 +32,10 @@ export interface Delivery {
   url: string | null;
   error: string | null;
   attempts: number;
+  /** Terminal external state; replacement needs explicit no-post confirmation. */
+  restartRequired?: boolean;
+  /** Bound before the first external operation; retained through reconnects. */
+  accountId?: string;
 }
 export interface Connection {
   platform: Platform;

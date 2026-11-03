@@ -113,6 +113,45 @@ async function fixture(override: Record<string, string> = {}) {
     },
   };
 }
+test("OAuth configuration and token reset commit atomically on database errors", async () => {
+  const h = await fixture();
+  try {
+    await h.login();
+    const oldConfig = { clientId: "old", clientSecret: "old-secret" };
+    h.store.set("config:youtube", oldConfig);
+    h.store.set("token:youtube", { accessToken: "old-access" });
+    const original = h.store.set.bind(h.store);
+    const failure = mock.method(h.store, "set", (key: string, value: unknown) => {
+      if (key === "token:youtube") throw new Error("database full");
+      original(key, value);
+    });
+    assert.equal((await h.req("/api/connections/youtube/config", { clientId: "new", clientSecret: "new-secret" })).status, 400);
+    failure.mock.restore();
+    assert.deepEqual(h.store.get("config:youtube"), oldConfig);
+    assert.deepEqual(h.store.get("token:youtube"), { accessToken: "old-access" });
+  } finally { await h.close(); }
+});
+for (const platform of ["youtube", "instagram"] as const)
+  test("confirmed terminal retry replaces external state only on the affected platform: " + platform, async () => {
+    const h = await fixture();
+    try {
+      await h.login(); h.video("v", "dispatched");
+      const d: Delivery = { videoId: "v", platform, state: "unknown", originalAt: Date.now(), nextAt: Date.now(), successAt: null, externalId: "terminal-id", url: null, error: "terminal", attempts: 1, restartRequired: true };
+      h.store.delivery(d);
+      h.store.set("upload:v:youtube", { location: "https://www.googleapis.com/upload/old" });
+      h.store.set("publishing:v:instagram", true);
+      h.store.set("published:v:instagram", "old-published-id");
+      assert.equal((await h.req(`/api/deliveries/v/${platform}/retry`, {})).status, 409);
+      assert.equal(h.store.deliveries()[0].externalId, "terminal-id");
+      assert.equal((await h.req(`/api/deliveries/v/${platform}/retry`, { confirmNoPost: true })).status, 200);
+      const saved = h.store.deliveries()[0];
+      assert.equal(saved.externalId, null);
+      assert.equal(saved.restartRequired, false);
+      assert.equal(saved.state, "pending");
+      assert.equal(h.store.get(platform === "youtube" ? "upload:v:youtube" : "published:v:instagram"), null);
+      assert.notEqual(h.store.get(platform === "youtube" ? "published:v:instagram" : "upload:v:youtube"), null);
+    } finally { await h.close(); }
+  });
 for (const expired of [true, false])
   test("manual retry resets only an explicitly expired YouTube session: " + expired, async () => {
     const h = await fixture();

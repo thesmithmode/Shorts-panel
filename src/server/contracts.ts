@@ -17,6 +17,18 @@ export class AccessRequired extends Error {
     super("Доступ отозван или истёк. Повторно подключите аккаунт.");
   }
 }
+export class AccountMismatch extends AccessRequired {
+  constructor() {
+    super();
+    this.message = "Подключён другой канал. Для незавершённых публикаций подключите исходный аккаунт.";
+  }
+}
+export class ConnectionChanged extends AccessRequired {
+  constructor() {
+    super();
+    this.message = "Подключение изменилось во время запроса. Обновите состояние панели.";
+  }
+}
 /** A lost session is not proof that the video was never published. */
 export class UploadSessionExpired extends Error {
   constructor() {

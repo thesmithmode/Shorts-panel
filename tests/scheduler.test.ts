@@ -13,6 +13,15 @@ import {
 } from "../src/shared/scheduler.ts";
 import type { Video, Delivery } from "../src/shared/model.ts";
 const monday = parseMoscow("2026-11-02T00:00");
+test("ordinary pin only releases the protected head when weekly coverage needs it", () => {
+  const v = videos(9);
+  v[0].scheduledAt = at(monday, 17);
+  v[8].pinned = true;
+  v[8].scheduledAt = at(monday, 15.5);
+  const result = plan(v, at(monday, 5));
+  assert.equal(result.get("0"), at(monday, 17));
+  assert.ok([...result.values()].every(t => t >= at(monday, 17)));
+});
 function videos(count: number): Video[] {
   return Array.from({ length: count }, (_, i) => ({
     id: String(i),

@@ -9,7 +9,10 @@ import {
   type Token,
 } from "./store.ts";
 import type { Platform, Video, Delivery, Connection } from "../shared/model.ts";
-import { AccessRequired, RateLimited, UploadSessionExpired, RetryableBeforeSend, RetryableSession, SourceUnavailable } from "./contracts.ts";
+import { AccessRequired, AccountMismatch, ConnectionChanged, RateLimited, UploadSessionExpired, RetryableBeforeSend, RetryableSession, SourceUnavailable } from "./contracts.ts";
+function nonemptyString(value: unknown): value is string {
+  return typeof value === "string" && !!value.trim();
+}
 function tokenResponse(value: any): {
   access_token: string;
   expires_in: number;
@@ -72,6 +75,27 @@ export class Providers {
     private store: Store,
     public origin: string,
   ) {}
+  private connectionVersion(p: Platform): string {
+    return JSON.stringify([this.store.get(configKey(p)), this.store.get(tokenKey(p))]);
+  }
+  private assertCurrentConnection(p: Platform, version: string) {
+    if (version !== this.connectionVersion(p)) throw new ConnectionChanged();
+  }
+  private saveConnection(p: Platform, token: Token, version: string) {
+    this.assertCurrentConnection(p, version);
+    if (this.store.deliveries().some(d => d.platform === p && d.state !== "published" &&
+        d.accountId && d.accountId !== token.accountId))
+      throw new AccountMismatch();
+    this.store.set(tokenKey(p), token);
+  }
+  private bindAccount(d: Delivery, token: Token) {
+    if (!nonemptyString(token.accountId)) this.requireAccess(d.platform);
+    if (d.accountId && d.accountId !== token.accountId) throw new AccountMismatch();
+    if (!d.accountId) {
+      d.accountId = token.accountId;
+      this.store.delivery(d);
+    }
+  }
   notBefore(p: Platform): number {
     return this.store.get<number>(`cooldown:${p}`) ?? 0;
   }
@@ -79,25 +103,28 @@ export class Providers {
     if (error instanceof RateLimited)
       this.store.set(`cooldown:${p}`, Math.max(this.notBefore(p), error.retryAt));
   }
-  private requireAccess(p: Platform): never {
+  private requireAccess(p: Platform, version = this.connectionVersion(p)): never {
+    this.assertCurrentConnection(p, version);
     const token = this.store.get<Token>(tokenKey(p));
     if (token) this.store.set(tokenKey(p), { ...token, requiresReconnect: true });
     throw new AccessRequired();
   }
-  private async request(p: Platform, url: string, init?: RequestInit) {
+  private async request(p: Platform, url: string, init?: RequestInit, version = this.connectionVersion(p)) {
     try {
+      this.assertCurrentConnection(p, version);
       if (this.notBefore(p) > Date.now()) throw new RateLimited(this.notBefore(p));
       return await json(url, init);
     } catch (error) {
       this.rememberRateLimit(p, error);
-      if (error instanceof AccessRequired) this.requireAccess(p);
+      if (error instanceof AccessRequired) this.requireAccess(p, version);
       throw error;
     }
   }
-  private async sessionRequest(url: string, init: RequestInit) {
+  private async sessionRequest(url: string, init: RequestInit, version: string) {
     try {
+      this.assertCurrentConnection("youtube", version);
       const response = await sessionFetch(url, init);
-      if (response.status === 401) this.requireAccess("youtube");
+      if (response.status === 401) this.requireAccess("youtube", version);
       return response;
     } catch (error) {
       this.rememberRateLimit("youtube", error);
@@ -169,6 +196,7 @@ export class Providers {
     if (p === "tiktok") throw new Error("Direct Post TikTok ещё не настроен");
     const c = this.store.get<AppConfig>(configKey(p));
     if (!c) throw new Error("Нет конфигурации");
+    const version = this.connectionVersion(p);
     if (p === "youtube") {
       const t = await json("https://oauth2.googleapis.com/token", {
         method: "POST",
@@ -189,14 +217,15 @@ export class Providers {
         "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
         { headers: { Authorization: `Bearer ${t.access_token}` } },
       );
-      if (!channel.items?.[0]) throw new Error("Канал не найден");
-      this.store.set(tokenKey(p), {
+      if (!nonemptyString(channel.items?.[0]?.id) || !nonemptyString(channel.items?.[0]?.snippet?.title))
+        throw new Error("Канал не найден или ответ неполный");
+      this.saveConnection(p, {
         accessToken: t.access_token,
         refreshToken: t.refresh_token,
         expiresAt: Date.now() + t.expires_in * 1000,
         account: channel.items[0].snippet.title,
         accountId: channel.items[0].id,
-      });
+      }, version);
     } else if (p === "instagram") {
       const form = new FormData();
       for (const [k, v] of Object.entries({
@@ -227,20 +256,21 @@ export class Providers {
           }),
       );
       tokenResponse(t);
-      if (!t.access_token || !me.user_id || !me.username)
+      if (!nonemptyString(me.user_id) || !nonemptyString(me.username))
         throw new Error("Неполный ответ Instagram");
-      this.store.set(tokenKey(p), {
+      this.saveConnection(p, {
         accessToken: t.access_token,
         expiresAt: Date.now() + t.expires_in * 1000,
         account: me.username,
         accountId: me.user_id,
-      });
+      }, version);
     }
   }
   async token(p: Platform): Promise<Token> {
     const t = this.store.get<Token>(tokenKey(p));
     const c = this.store.get<AppConfig>(configKey(p));
     if (!t || !c) throw new Error("Подключите аккаунт");
+    const version = this.connectionVersion(p);
     if (t.requiresReconnect) throw new AccessRequired();
     if (this.notBefore(p) > Date.now()) throw new RateLimited(this.notBefore(p));
     if (p === "youtube" && t.expiresAt < Date.now() + 120_000) {
@@ -252,8 +282,9 @@ export class Providers {
           refresh_token: t.refreshToken!,
           grant_type: "refresh_token",
         }),
-      });
+      }, version);
       tokenResponse(r);
+      this.assertCurrentConnection(p, version);
       if (typeof r.refresh_token === "string" && r.refresh_token.trim())
         t.refreshToken = r.refresh_token;
       t.accessToken = r.access_token;
@@ -269,8 +300,10 @@ export class Providers {
             grant_type: "ig_refresh_token",
             access_token: t.accessToken,
           }),
+        undefined, version,
       );
       tokenResponse(r);
+      this.assertCurrentConnection(p, version);
       t.accessToken = r.access_token;
       t.expiresAt = Date.now() + r.expires_in * 1000;
       this.store.set(tokenKey(p), t);
@@ -317,6 +350,8 @@ export class Providers {
       if (cause instanceof AccessRequired || cause instanceof RateLimited) throw cause;
       throw new RetryableBeforeSend("Не удалось обновить доступ к площадке", { cause });
     }
+    this.bindAccount(d, token);
+    const version = this.connectionVersion(d.platform);
     const save = () => this.store.delivery(d);
     if (d.platform === "youtube") {
       // A recorded session may already have completed. Probe it before sending bytes.
@@ -338,7 +373,7 @@ export class Providers {
           redirect: "error",
           headers: { "Content-Length": "0", "Content-Range": `bytes */${v.bytes}` },
           signal: AbortSignal.timeout(45_000),
-        });
+        }, version);
         checkExpiry(probe, location);
         if (probe.status === 308) {
           const range = probe.headers.get("range");
@@ -351,7 +386,7 @@ export class Providers {
           }
         } else if (probe.ok) {
           result = await probe.json();
-          if (!result?.id) throw new Error("Нет ID YouTube");
+          if (!nonemptyString(result?.id)) throw new Error("Нет ID YouTube");
         } else throw new Error("Не удалось восстановить загрузку YouTube");
       } else {
         this.requireSource(v);
@@ -374,7 +409,7 @@ export class Providers {
         );
         try { checkRateLimit(init); }
         catch (error) { this.rememberRateLimit("youtube", error); throw error; }
-        if (init.status === 401) this.requireAccess("youtube");
+        if (init.status === 401) this.requireAccess("youtube", version);
         location = init.headers.get("location") ?? undefined;
         if (!init.ok || !location) throw new Error("YouTube не создал загрузку");
         this.validateYoutubeLocation(location);
@@ -393,12 +428,12 @@ export class Providers {
           body: createReadStream(join(this.store.dir, "videos", v.filename), { start: offset }) as any,
           duplex: "half",
           signal: AbortSignal.timeout(15 * 60_000),
-        } as any);
+        } as any, version);
         checkExpiry(response, location!);
         if (response.status === 308) throw new RetryableSession("Загрузка частично принята");
         if (!response.ok) throw new Error("Не удалось подтвердить загрузку YouTube");
         result = await response.json();
-        if (!result.id) throw new Error("Нет ID YouTube");
+        if (!nonemptyString(result?.id)) throw new Error("Нет ID YouTube");
       }
       d.externalId = result.id;
       save();
@@ -413,7 +448,7 @@ export class Providers {
             caption: `${v.title}\n${v.hashtags}`,
             access_token: token.accessToken,
           }),
-        });
+        }, version);
         if (typeof r.id !== "string" || !r.id.trim())
           throw new Error("Instagram не подтвердил ID контейнера");
         d.externalId = r.id;
@@ -427,6 +462,7 @@ export class Providers {
               fields: "status_code",
               access_token: token.accessToken,
             }),
+          undefined, version,
         );
       } catch (cause) {
         if (cause instanceof AccessRequired || cause instanceof RateLimited) throw cause;
@@ -442,8 +478,11 @@ export class Providers {
         return;
       }
       if (status.status_code !== "FINISHED") {
-        if (status.status_code === "ERROR" || status.status_code === "EXPIRED")
+        if (status.status_code === "ERROR" || status.status_code === "EXPIRED") {
+          d.restartRequired = true;
+          save();
           throw new Error("Instagram не обработал видео");
+        }
         if (status.status_code !== "IN_PROGRESS")
           throw new RetryableSession("Instagram вернул неизвестный статус контейнера");
         d.state = "processing";
@@ -464,14 +503,14 @@ export class Providers {
             creation_id: d.externalId!,
             access_token: token.accessToken,
           }),
-        });
+        }, version);
       } catch (cause) {
         if (cause instanceof AccessRequired || cause instanceof RateLimited) throw cause;
         throw new RetryableSession("Проверим результат публикации Instagram", { cause });
       }
-      this.store.set(`published:${v.id}:instagram`, published.id);
-      if (typeof published.id !== "string" || !published.id)
+      if (!nonemptyString(published?.id))
         throw new Error("Instagram не подтвердил ID публикации");
+      this.store.set(`published:${v.id}:instagram`, published.id);
       d.externalId = published.id;
       d.state = "published";
       d.successAt = Date.now();
@@ -485,6 +524,7 @@ export class Providers {
               fields: "id,permalink",
               access_token: token.accessToken,
             }),
+          undefined, version,
         );
         d.url = typeof media.permalink === "string" ? media.permalink : null;
         save();
@@ -494,26 +534,32 @@ export class Providers {
 
       return;
     } else throw new Error("Direct Post TikTok ещё не настроен");
-    await this.verifyYoutube(d, token);
+    await this.verifyYoutube(d, token, version);
   }
-  async verifyYoutube(d: Delivery, token?: Token) {
+  async verifyYoutube(d: Delivery, token?: Token, version?: string) {
     let r: any;
     try {
       const t = token ?? (await this.token("youtube"));
+      this.bindAccount(d, t);
+      version ??= this.connectionVersion("youtube");
       r = await this.request("youtube",
         "https://www.googleapis.com/youtube/v3/videos?" +
           new URLSearchParams({
             part: "status,processingDetails",
             id: d.externalId!,
           }),
-        { headers: { Authorization: `Bearer ${t.accessToken}` } },
+        { headers: { Authorization: `Bearer ${t.accessToken}` } }, version,
       );
     } catch (cause) {
       if (cause instanceof AccessRequired || cause instanceof RateLimited) throw cause;
       throw new RetryableSession("Не удалось проверить статус YouTube", { cause });
     }
     const video = r.items?.[0];
-    if (!video) throw new Error("Загрузка YouTube не найдена");
+    if (!video) {
+      d.restartRequired = true;
+      this.store.delivery(d);
+      throw new Error("Загрузка YouTube не найдена");
+    }
     if (
       video.status?.uploadStatus === "processed" &&
       video.status?.privacyStatus === "public"
@@ -524,9 +570,11 @@ export class Providers {
       d.error = null;
     } else if (
       ["failed", "rejected", "deleted"].includes(video.status?.uploadStatus)
-    )
+    ) {
+      d.restartRequired = true;
+      this.store.delivery(d);
       throw new Error("YouTube отклонил видео");
-    else {
+    } else {
       d.state = "processing";
       d.nextAt = Date.now() + 30_000;
     }

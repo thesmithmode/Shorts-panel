@@ -50,6 +50,7 @@ export function Connections({
     )
       return;
     setBusy(true);
+    setError("");
     try {
       await request(`/connections/${platform}/disconnect`, {});
       await onChanged();
@@ -83,6 +84,7 @@ export function Connections({
             <div>
               <h2>{names[c.platform]}</h2>
               <p>{c.account ?? c.message}</p>
+              {c.account && !c.connected ? <p role="status">{c.message}</p> : null}
             </div>
             {c.connected ? (
               <CheckCircle2 className="success-icon" size={22} />

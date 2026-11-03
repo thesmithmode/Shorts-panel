@@ -94,6 +94,164 @@ function harness() {
     },
   };
 }
+for (const platform of ["youtube", "instagram"] as const)
+  for (const change of ["disconnect", "reconnect"] as const)
+    test("late token refresh cannot undo " + change + " for " + platform, async () => {
+      const h = harness();
+      let finish!: (response: Response) => void;
+      const response = new Promise<Response>(resolve => { finish = resolve; });
+      const transport = mock.method(globalThis, "fetch", async () => response);
+      try {
+        h.store.set(tokenKey(platform), { ...h.token, expiresAt: 0 });
+        const refresh = h.provider.token(platform);
+        const current = change === "disconnect" ? null : { ...h.token, accessToken: "new-connection" };
+        h.store.set(tokenKey(platform), current);
+        finish(new Response(JSON.stringify({ access_token: "stale-refresh", expires_in: 3600 })));
+        await assert.rejects(() => refresh, /подключение изменилось/i);
+        assert.deepEqual(h.store.get(tokenKey(platform)), current);
+      } finally { transport.mock.restore(); h.close(); }
+    });
+
+test("late authorization error does not invalidate newly connected credentials", async () => {
+  const h = harness();
+  let finish!: (response: Response) => void;
+  const response = new Promise<Response>(resolve => { finish = resolve; });
+  const transport = mock.method(globalThis, "fetch", async () => response);
+  try {
+    h.store.set(tokenKey("youtube"), h.token);
+    const d = h.delivery("youtube"); d.externalId = "old-video";
+    const verification = h.provider.verifyYoutube(d);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const current = { ...h.token, accessToken: "new-connection" };
+    h.store.set(tokenKey("youtube"), current);
+    finish(new Response("expired old token", { status: 401 }));
+    await assert.rejects(() => verification);
+    assert.deepEqual(h.store.get(tokenKey("youtube")), current);
+    assert.equal(h.provider.connections()[0].connected, true);
+  } finally { transport.mock.restore(); h.close(); }
+});
+
+test("an old OAuth callback cannot overwrite a newer connection", async () => {
+  const h = harness();
+  let finish!: (response: Response) => void;
+  const first = new Promise<Response>(resolve => { finish = resolve; });
+  let calls = 0;
+  const transport = mock.method(globalThis, "fetch", async () => ++calls === 1 ? first
+    : new Response(JSON.stringify({ items: [{ id: "account-id", snippet: { title: "Owner" } }] })));
+  try {
+    h.store.set(tokenKey("youtube"), h.token);
+    const oldCallback = h.provider.exchange("youtube", "old-code");
+    const current = { ...h.token, accessToken: "newer-connection" };
+    h.store.set(tokenKey("youtube"), current);
+    finish(new Response(JSON.stringify({ access_token: "old-callback", refresh_token: "r", expires_in: 3600 })));
+    await assert.rejects(() => oldCallback, /подключение изменилось/i);
+    assert.deepEqual(h.store.get(tokenKey("youtube")), current);
+  } finally { transport.mock.restore(); h.close(); }
+});
+test("disconnect during Instagram container creation stops subsequent external requests and retains the ID", async () => {
+  const h = harness();
+  let calls = 0;
+  const transport = mock.method(globalThis, "fetch", async () => {
+    calls++;
+    h.store.set(tokenKey("instagram"), null);
+    return new Response(JSON.stringify({ id: "created-container", status_code: "IN_PROGRESS" }));
+  });
+  try {
+    h.store.set(tokenKey("instagram"), h.token);
+    const d = h.delivery("instagram");
+    await assert.rejects(() => h.provider.publish(h.video, d), /подключение изменилось/i);
+    assert.equal(calls, 1);
+    assert.equal(h.store.deliveries()[0].externalId, "created-container");
+    assert.equal(h.store.get(tokenKey("instagram")), null);
+  } finally { transport.mock.restore(); h.close(); }
+});
+for (const platform of ["youtube", "instagram"] as const)
+  test("account binding survives disconnect and refuses reconnecting unfinished work to another account: " + platform, async () => {
+    const h = harness();
+    try {
+      h.store.set(tokenKey(platform), h.token);
+      const d = h.delivery(platform);
+      // A safe source error happens after binding, before any external upload.
+      rmSync(join(h.store.dir, "videos", h.video.filename));
+      await assert.rejects(() => h.provider.publish(h.video, d));
+      assert.equal(h.store.deliveries()[0].accountId, "account-id");
+      h.store.set(tokenKey(platform), null);
+      if (platform === "youtube") h.replies.push(
+        { body: { access_token: "new", refresh_token: "refresh", expires_in: 3600 } },
+        { body: { items: [{ id: "different-account", snippet: { title: "Other" } }] } });
+      else h.replies.push(
+        { body: { access_token: "short" } },
+        { body: { access_token: "new", expires_in: 5184000 } },
+        { body: { user_id: "different-account", username: "Other" } });
+      await assert.rejects(() => h.provider.exchange(platform, "code"), /исходный аккаунт/i);
+      assert.equal(h.store.get(tokenKey(platform)), null);
+      const attempts = h.calls.length;
+      h.store.set(tokenKey(platform), { ...h.token, accountId: "different-account" });
+      await assert.rejects(() => platform === "youtube"
+        ? h.provider.verifyYoutube(d) : h.provider.publish(h.video, d), /исходный аккаунт/i);
+      assert.equal(h.calls.length, attempts, "wrong-account credentials never reach an upload or verification endpoint");
+    } finally { h.close(); }
+  });
+for (const status of ["failed", "rejected", "deleted", "missing"])
+  test("terminal YouTube status retains ID and marks a confirmed restart requirement: " + status, async () => {
+    const h = harness();
+    try {
+      h.store.set(tokenKey("youtube"), h.token);
+      const d = h.delivery("youtube"); d.externalId = "old-id";
+      h.replies.push({ body: { items: status === "missing" ? [] : [{ status: { uploadStatus: status } }] } });
+      await assert.rejects(() => h.provider.verifyYoutube(d));
+      const saved = h.store.deliveries()[0];
+      assert.equal(saved.externalId, "old-id");
+      assert.equal(saved.restartRequired, true);
+    } finally { h.close(); }
+  });
+
+for (const id of [{ unexpected: "object" }, true, 123, "   "])
+  test("malformed external IDs never replace credentials or confirm a YouTube post: " + JSON.stringify(id), async () => {
+    const h = harness();
+    try {
+      h.store.set(tokenKey("youtube"), h.token);
+      h.replies.push(
+        { body: { access_token: "new", refresh_token: "new-refresh", expires_in: 3600 } },
+        { body: { items: [{ id, snippet: { title: "Owner" } }] } });
+      await assert.rejects(() => h.provider.exchange("youtube", "code"));
+      assert.deepEqual(h.store.get(tokenKey("youtube")), h.token);
+      h.replies.push(
+        { body: {}, headers: { location: "https://www.googleapis.com/upload/x" } },
+        { body: { id } });
+      const d = h.delivery("youtube");
+      await assert.rejects(() => h.provider.publish(h.video, d));
+      assert.equal(d.externalId, null);
+      assert.equal(d.successAt, null);
+      assert.ok(h.store.deliveries().every(saved => saved.externalId === null && saved.successAt === null && saved.state !== "published"));
+      assert.equal(h.calls.length, 4, "invalid IDs must not be used in a verification request");
+    } finally { h.close(); }
+  });
+
+test("malformed Instagram account identity preserves the previous connection", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("instagram"), h.token);
+    h.replies.push(
+      { body: { access_token: "short" } },
+      { body: { access_token: "new", expires_in: 5184000 } },
+      { body: { user_id: { unexpected: "object" }, username: "Owner" } });
+    await assert.rejects(() => h.provider.exchange("instagram", "code"));
+    assert.deepEqual(h.store.get(tokenKey("instagram")), h.token);
+  } finally { h.close(); }
+});
+for (const status of ["ERROR", "EXPIRED"])
+  test("terminal Instagram container can be restarted after explicit confirmation: " + status, async () => {
+    const h = harness();
+    try {
+      h.store.set(tokenKey("instagram"), h.token);
+      const d = h.delivery("instagram"); d.externalId = "old-container";
+      h.replies.push({ body: { status_code: status } });
+      await assert.rejects(() => h.provider.publish(h.video, d));
+      assert.equal(h.store.deliveries()[0].restartRequired, true);
+      assert.equal(d.externalId, "old-container");
+    } finally { h.close(); }
+  });
 for (const p of ["youtube", "instagram"] as const)
   test(p + " revoked refresh persists reconnect status without losing credentials", async () => {
     const h = harness();

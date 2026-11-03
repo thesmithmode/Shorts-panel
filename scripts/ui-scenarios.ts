@@ -81,6 +81,7 @@ export async function uiScenarios(
     anonymous = false,
     loginFails = false,
     uploadMode = "json";
+  let releaseUpload: (() => void) | undefined;
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname.replace("/api", "");
     if (path.endsWith("/file")) return route.fulfill({ status: 404, body: "" });
@@ -101,6 +102,7 @@ export async function uiScenarios(
       return route.fulfill({ json: snapshot });
     }
     if (path === "/videos" && route.request().method() === "POST") {
+      if (uploadMode === "held") await new Promise<void>(resolve => { releaseUpload = resolve; });
       if (uploadMode === "network") return route.abort("failed");
       if (uploadMode === "raw")
         return route.fulfill({ status: 400, body: "bad response" });
@@ -198,6 +200,7 @@ export async function uiScenarios(
   failure = "";
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Отключить аккаунт" }).first().click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
   const config = page.getByRole("button", { name: "Изменить OAuth" }).first();
   await config.click();
   await config.click();
@@ -210,8 +213,12 @@ export async function uiScenarios(
   failure = "";
   await page.getByRole("button", { name: "Сохранить на сервере" }).click();
   snapshot.connections[0].connected = false;
+  snapshot.connections[0].message = "Доступ отозван. Повторно подключите аккаунт.";
   await reload();
   await page.getByRole("button", { name: "Подключения", exact: true }).click();
+  await expect(page.getByText("Доступ отозван. Повторно подключите аккаунт.", { exact: true })).toBeVisible();
+  if (process.env.SHORTS_SCREENSHOT_DIR)
+    await page.screenshot({ path: `${process.env.SHORTS_SCREENSHOT_DIR}/shorts-reconnect.png`, fullPage: true });
   failure = "connect";
   await page
     .getByRole("button", { name: "Подключить аккаунт" })
@@ -244,6 +251,19 @@ export async function uiScenarios(
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
   }
+  uploadMode = "held";
+  await page.getByRole("button", { name: "Загрузить видео", exact: true }).click();
+  await page.locator("input[type=file]").setInputFiles(fixture);
+  await page.getByRole("button", { name: "Добавить в очередь" }).click();
+  await expect(page.getByRole("button", { name: "Сохраняю…" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toBeVisible();
+  if (process.env.SHORTS_SCREENSHOT_DIR)
+    await page.screenshot({ path: `${process.env.SHORTS_SCREENSHOT_DIR}/shorts-upload-in-progress.png`, fullPage: true });
+  await expect.poll(() => !!releaseUpload).toBe(true);
+  releaseUpload!();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await close();
   for (const mode of ["json", "raw", "network"]) {
     uploadMode = mode;
     await page

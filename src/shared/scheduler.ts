@@ -46,12 +46,18 @@ export function plan(
     (v) =>
       v.pinned && v.kind === "content" && dayStart(v.scheduledAt!) === today,
   );
+  const coveredDays = new Set(fixed
+    .filter(v => v.kind === "content")
+    .map(v => dayStart(v.scheduledAt!)));
+  const uncoveredDays = Array.from({ length: 7 }, (_, i) => first + i * DAY)
+    .filter(day => !coveredDays.has(day)).length;
   let protectedVideo = automatic[0];
   if (
     preserveHead &&
     protectedVideo?.scheduledAt &&
     protectedVideo.scheduledAt > now &&
-    !(manualToday && dayStart(protectedVideo.scheduledAt) === today)
+    !(manualToday && dayStart(protectedVideo.scheduledAt) === today &&
+      automatic.length <= uncoveredDays)
   ) {
     result.set(protectedVideo.id, protectedVideo.scheduledAt);
   }
