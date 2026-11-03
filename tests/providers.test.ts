@@ -982,3 +982,16 @@ test("idle refresh preserves a rotated YouTube refresh token", async () => {
     assert.equal(h.store.get<any>(tokenKey("youtube"))?.refreshToken, "rotated-idle");
   } finally { h.close(); }
 });
+
+test("processed private YouTube video stops polling without scheduling a duplicate upload", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("youtube"), h.token);
+    const d = h.delivery("youtube"); d.externalId = "private-video";
+    h.replies.push({ body: { items: [{ status: { uploadStatus: "processed", privacyStatus: "private" } }] } });
+    await assert.rejects(() => h.provider.verifyYoutube(d));
+    assert.notEqual(d.state, "published");
+    assert.equal(d.restartRequired, undefined);
+    assert.equal(d.externalId, "private-video");
+  } finally { h.close(); }
+});

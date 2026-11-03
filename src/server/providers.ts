@@ -571,6 +571,9 @@ export class Providers {
       d.successAt = Date.now();
       d.url = `https://www.youtube.com/watch?v=${d.externalId}`;
       d.error = null;
+    } else if (video.status?.uploadStatus === "processed") {
+      // The upload exists, but public visibility was not confirmed. Never re-upload it.
+      throw new Error("Видео обработано YouTube, но не опубликовано публично. Проверьте видимость на канале.");
     } else if (
       ["failed", "rejected", "deleted"].includes(video.status?.uploadStatus)
     ) {
