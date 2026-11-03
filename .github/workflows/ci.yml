@@ -33,12 +33,31 @@ jobs:
         with:
           name: coverage-${{ github.sha }}
           path: coverage/
+          retention-days: 7
       - name: Package verified release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
+          set -euo pipefail
+          npm run build
           npm ci --omit=dev
-          tar --dereference -czf /tmp/shorts-release.tgz dist src node_modules package.json package-lock.json LICENSE
+          # Bundle the exact verified Node.js runtime; the VPS system node is older.
+          mkdir -p bin
+          cp "$(node -p process.execPath)" bin/node
+          bin/node --version
+          tar --dereference --hard-dereference -czf /tmp/shorts-release.tgz bin dist src node_modules package.json package-lock.json LICENSE
           printf '%s' "$GITHUB_SHA" > /tmp/release-sha
+          rm -rf bin
+          # Reject the bundle here if the VPS receiver would reject it (links, size, missing files).
+          python3 - <<'PY'
+          import importlib.util, pathlib, tempfile
+          spec = importlib.util.spec_from_file_location('release', 'ops/release.py')
+          release = importlib.util.module_from_spec(spec); spec.loader.exec_module(release)
+          with tempfile.TemporaryDirectory() as tmp, open('/tmp/shorts-release.tgz', 'rb') as payload:
+              release.extract_release(payload, pathlib.Path(tmp))
+              missing = [p for p in release.REQUIRED if not (pathlib.Path(tmp) / p).is_file()]
+              assert not missing, missing
+          print('Release bundle accepted by receiver rules')
+          PY
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
@@ -46,3 +65,5 @@ jobs:
           path: |
             /tmp/shorts-release.tgz
             /tmp/release-sha
+          retention-days: 7
+          if-no-files-found: error

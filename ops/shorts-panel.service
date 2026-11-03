@@ -1,6 +1,8 @@
 [Unit]
+StartLimitIntervalSec=300
+StartLimitBurst=5
 Description=Shorts Panel (independent of Stream Panel)
-After=network-online.target
+After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
@@ -12,7 +14,8 @@ Environment=NODE_ENV=production
 Environment=NODE_OPTIONS=--max-old-space-size=256
 Environment=SHORTS_DATA_DIR=/var/lib/shorts-panel
 EnvironmentFile=/etc/shorts-panel/server.env
-ExecStart=/usr/bin/env node --import tsx src/server/index.ts
+# Node.js 24 runtime ships inside each immutable release (server system node is 22).
+ExecStart=/opt/shorts-panel/current/bin/node --import tsx src/server/index.ts
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=90
@@ -23,6 +26,10 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/shorts-panel
 RestrictSUIDSGID=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
 LockPersonality=true
 CPUWeight=20
 CPUQuota=50%
