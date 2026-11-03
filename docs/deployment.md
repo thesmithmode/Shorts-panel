@@ -6,11 +6,22 @@
 
 Предлагаемый адрес без покупки домена: `https://shorts-panel.23-95-166-119.sslip.io`. HTTPS через существующий Traefik. DNS, имя certificate resolver и entrypoint требуют живой проверки.
 
-## Фактическое состояние проверки
+## Фактическое состояние (2026-11-03)
 
-Из этой рабочей среды SSH на 23.95.166.119:22 завершился `Connection refused`. Доступ к TCP connect proxy также завершился отказом. Известный HTTPS `/healthz` Stream Panel ответил 200. Это не доказывает доступность SSH, ресурсы VPS или конкретную конфигурацию Traefik.
+VPS проверен по SSH (Ubuntu 24.04, 2 vCPU, 3.3 GiB RAM, ~17 GiB свободно). Выполнен изолированный bootstrap, соседние службы не менялись:
 
-На VPS ничего не установлено, службы и файлы соседних сервисов не менялись. SSH-ключи распакованы только во временный закрытый каталог вне репозитория; они не входят в коммиты и сборку.
+- пользователи `shorts-panel` (служба, nologin) и `shorts-deploy` (только forced command);
+- `/opt/shorts-panel/{releases,checkpoints}`, `/var/lib/shorts-panel` (0700), `/etc/shorts-panel/{server.env,health-host}`;
+- receiver `/usr/local/lib/shorts-panel/{release.py,receive.sh}`, sudoers `/etc/sudoers.d/shorts-panel` только на receiver;
+- `shorts-panel.service` установлена и включена, но не запущена до первого релиза из main;
+- служба слушает `172.21.0.1:47921` (шлюз сети traefik-proxy, как Stream Panel); правило ufw только 172.21.0.2 → 172.21.0.1:47921;
+- отдельный файл Traefik `/root/traefik/config/shorts-panel.yml` (router/service/middleware с префиксом shorts-panel).
+
+GitHub: secrets `SHORTS_DEPLOY_KEY`, `SHORTS_DEPLOY_KNOWN_HOSTS`; variables `SHORTS_DEPLOY_HOST`, `SHORTS_DEPLOY_PORT`, `SHORTS_PUBLIC_ORIGIN`, `SHORTS_PRODUCTION_ENABLED=true`.
+
+Релиз содержит собственный Node.js (`bin/node`) из CI: системный Node на VPS — 22. Receiver хранит 3 релиза и 3 checkpoint состояния, удаляет неудачный релиз и staging, первый релиз ставится без предыдущего current, повтор активного SHA идемпотентен.
+
+Смена домена (например, DuckDNS для Google OAuth) требует согласованно поменять `SHORTS_PUBLIC_ORIGIN` в `/etc/shorts-panel/server.env`, Host в route-файле Traefik и variable репозитория.
 
 ## Последовательность после восстановления доступа
 

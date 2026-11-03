@@ -53,7 +53,24 @@ jobs:
           printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/shorts-ssh/key"
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/shorts-ssh/known_hosts"
           ssh -i "$RUNNER_TEMP/shorts-ssh/key" \
-            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$RUNNER_TEMP/shorts-ssh/known_hosts" \
             -p "${DEPLOY_PORT:-22}" "shorts-deploy@$DEPLOY_HOST" \
             "release $RELEASE_SHA" < release/shorts-release.tgz
+      - name: Verify public endpoint serves the exact release
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          PUBLIC_ORIGIN: ${{ vars.SHORTS_PUBLIC_ORIGIN }}
+        run: |
+          set -euo pipefail
+          test -n "$PUBLIC_ORIGIN" || { echo 'SHORTS_PUBLIC_ORIGIN not set; skipping public check'; exit 0; }
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 5 "$PUBLIC_ORIGIN/healthz" | grep -q "\"release\":\"$RELEASE_SHA\""; then
+              echo 'Public healthz reports the deployed release'; exit 0
+            fi
+            sleep 4
+          done
+          echo 'Public endpoint did not report the deployed release'; exit 1
+      - name: Remove runner artifacts
+        if: always()
+        run: rm -rf release
