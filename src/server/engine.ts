@@ -1,7 +1,7 @@
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { groupDeliveries } from "../shared/deliveries.ts";
-import { PLATFORMS } from "../shared/model.ts";
+import { PLATFORMS, type Platform } from "../shared/model.ts";
 import { plan, recoveryAt, deletionAt, HOUR } from "../shared/scheduler.ts";
 import type {
   QueueRepository,
@@ -12,6 +12,7 @@ import { AccessRequired, RateLimited, UploadSessionExpired, RetryableBeforeSend,
 export class Engine {
   running = false;
   private idleWaiters: (() => void)[] = [];
+  private maintenanceNext: Partial<Record<Platform, number>> = {};
   whenIdle(): Promise<void> {
     return this.running
       ? new Promise((resolve) => this.idleWaiters.push(resolve))
@@ -114,7 +115,19 @@ export class Engine {
                 regularB = now < b.originalAt + HOUR ? 0 : 1;
               return regularA - regularB || a.nextAt - b.nextAt;
             })[0];
-          if (!due) return;
+          if (!due) {
+            if (platform !== "tiktok" && this.providers.maintain &&
+                now >= (this.maintenanceNext[platform] ?? 0) &&
+                this.providers.connections().find((c) => c.platform === platform)?.connected) {
+              const cooldown = this.providers.notBefore?.(platform) ?? 0;
+              this.maintenanceNext[platform] = Math.max(now + HOUR, cooldown);
+              if (cooldown <= now) {
+                try { await this.providers.maintain(platform); }
+                catch { /* Retry later; explicit access failures are saved by the provider. */ }
+              } else this.maintenanceNext[platform] = cooldown;
+            }
+            return;
+          }
           const v = this.store.videos().find((v) => v.id === due.videoId);
           if (!v || v.deletedAt) return;
           const cooldown = this.providers.notBefore?.(platform) ?? 0;

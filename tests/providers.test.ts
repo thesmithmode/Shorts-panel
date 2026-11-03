@@ -945,3 +945,40 @@ test("published Instagram container can be confirmed even when local original is
     assert.equal(d.state, "published");
   } finally { h.close(); }
 });
+
+test("idle maintenance refreshes an Instagram token without a video", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("instagram"), { ...h.token, expiresAt: Date.now() + 10 * 86400000 });
+    h.replies.push({ body: { access_token: "renewed-idle", expires_in: 60 * 86400 } });
+    await h.provider.maintain("instagram");
+    assert.equal(h.store.get<any>(tokenKey("instagram"))?.accessToken, "renewed-idle");
+    assert.equal(h.calls.length, 1);
+  } finally { h.close(); }
+});
+
+test("idle refresh distinguishes revoked access from temporary failure and preserves credentials", async () => {
+  const h = harness();
+  try {
+    const original = { ...h.token, expiresAt: Date.now() + 10 * 86400000 };
+    h.store.set(tokenKey("instagram"), original);
+    h.replies.push({ status: 503, body: { error: "temporary" } });
+    await assert.rejects(() => h.provider.maintain("instagram"));
+    assert.equal(h.store.get<any>(tokenKey("instagram"))?.accessToken, original.accessToken);
+    assert.equal(h.provider.connections().find((c) => c.platform === "instagram")?.connected, true);
+    h.replies.push({ status: 401, body: { error: "revoked" } });
+    await assert.rejects(() => h.provider.maintain("instagram"));
+    assert.equal(h.store.get<any>(tokenKey("instagram"))?.accessToken, original.accessToken);
+    assert.equal(h.provider.connections().find((c) => c.platform === "instagram")?.connected, false);
+  } finally { h.close(); }
+});
+
+test("idle refresh preserves a rotated YouTube refresh token", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("youtube"), { ...h.token, expiresAt: Date.now() - 1 });
+    h.replies.push({ body: { access_token: "new", refresh_token: "rotated-idle", expires_in: 3600 } });
+    await h.provider.maintain("youtube");
+    assert.equal(h.store.get<any>(tokenKey("youtube"))?.refreshToken, "rotated-idle");
+  } finally { h.close(); }
+});

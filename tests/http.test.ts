@@ -695,3 +695,16 @@ test("storage reports missing queued originals and clears the warning when the f
     assert.equal(storage.missing, 0);
   } finally { await h.close(); }
 });
+
+test("upload rejects unsupported video codec with actionable message before queuing", async () => {
+  const h = await fixture();
+  try {
+    await h.login();
+    const input = join(h.dir, "mpeg4.mp4");
+    execFileSync("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", "color=s=180x320:d=3.1", "-c:v", "mpeg4", input], { timeout: 30000 });
+    const response = await fetch(h.base + "/api/videos", { method: "POST", headers: { Origin: origin, Cookie: h.getCookie(), "X-CSRF-Token": h.getCsrf(), "Content-Type": "video/mp4", "X-Video-Title": "codec" }, body: readFileSync(input) });
+    assert.equal(response.status, 400);
+    assert.match(((await response.json()) as any).error, /H\.264|H\.265/);
+    assert.equal(h.store.videos().length, 0);
+  } finally { await h.close(); }
+});

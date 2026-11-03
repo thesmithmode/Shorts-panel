@@ -535,3 +535,47 @@ test("missing original is flagged and scheduled safely without an ambiguous publ
     }
   } finally { store.db.close(); rmSync(dir, { recursive: true }); }
 });
+
+test("idle worker maintains supported connections hourly without blocking the queue after transient failure", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shorts-idle-auth-"));
+  const store = new Store(dir);
+  let clock = parseMoscow("2026-11-02T12:00");
+  const calls: string[] = [];
+  let failure = true;
+  const gateway: PublicationGateway = {
+    connections: () => PLATFORMS.map((platform) => ({ platform, connected: true })),
+    maintain: async (platform) => { calls.push(platform); if (platform === "instagram" && failure) throw new Error("offline"); },
+    publish: async () => {}, verifyYoutube: async () => {},
+  };
+  try {
+    const engine = new Engine(store, gateway, () => clock);
+    await engine.tick();
+    assert.deepEqual(calls.sort(), ["instagram", "youtube"]);
+    await engine.tick();
+    assert.equal(calls.length, 2);
+    failure = false; clock += HOUR;
+    await engine.tick();
+    assert.equal(calls.length, 4);
+    assert.equal(engine.running, false);
+  } finally { store.db.close(); rmSync(dir, { recursive: true }); }
+});
+
+test("idle maintenance waits for a platform cooldown and skips disconnected accounts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shorts-idle-cooldown-"));
+  const store = new Store(dir);
+  let clock = parseMoscow("2026-11-02T12:00");
+  const until = clock + 2 * HOUR;
+  const calls: string[] = [];
+  const gateway: PublicationGateway = {
+    connections: () => PLATFORMS.map((platform) => ({ platform, connected: platform !== "youtube" })),
+    notBefore: (platform) => platform === "instagram" ? until : 0,
+    maintain: async (platform) => { calls.push(platform); },
+    publish: async () => {}, verifyYoutube: async () => {},
+  };
+  try {
+    const engine = new Engine(store, gateway, () => clock);
+    await engine.tick(); assert.deepEqual(calls, []);
+    clock = until - 1; await engine.tick(); assert.deepEqual(calls, []);
+    clock = until; await engine.tick(); assert.deepEqual(calls, ["instagram"]);
+  } finally { store.db.close(); rmSync(dir, { recursive: true }); }
+});

@@ -266,6 +266,9 @@ export class Providers {
       }, version);
     }
   }
+  async maintain(p: Exclude<Platform, "tiktok">): Promise<void> {
+    await this.token(p);
+  }
   async token(p: Platform): Promise<Token> {
     const t = this.store.get<Token>(tokenKey(p));
     const c = this.store.get<AppConfig>(configKey(p));

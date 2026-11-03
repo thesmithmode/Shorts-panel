@@ -47,6 +47,7 @@ export interface QueueRepository {
 /** Publishing capabilities used by the worker; OAuth configuration is not its concern. */
 export interface PublicationGateway {
   connections(): { platform: Platform; connected: boolean }[];
+  maintain?(platform: Exclude<Platform, "tiktok">): Promise<void>;
   notBefore?(platform: Platform): number;
   canRecover?(delivery: Delivery): boolean;
   publish(video: Video, delivery: Delivery): Promise<void>;

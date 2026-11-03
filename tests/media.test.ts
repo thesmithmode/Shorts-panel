@@ -41,3 +41,27 @@ test("vertical video metadata requires finite positive dimensions and bounded du
     180,
   );
 });
+
+test("Instagram preflight accepts supported codec, frame-rate boundaries and optional AAC audio", async () => {
+  const { validateInstagramFormat } = await import("../src/server/media.ts");
+  assert.equal(typeof validateInstagramFormat, "function");
+  const video = { codec_type: "video", codec_name: "h264", width: 1080, avg_frame_rate: "30000/1001" };
+  for (const rate of ["23/1", "60/1", "30000/1001", "60000/1001"]) {
+    assert.doesNotThrow(() => validateInstagramFormat({ streams: [{ ...video, avg_frame_rate: rate }] }));
+  }
+  assert.doesNotThrow(() => validateInstagramFormat({ streams: [{ ...video, bit_rate: "25000000" }] }));
+  assert.doesNotThrow(() => validateInstagramFormat({ streams: [{ ...video, bit_rate: "N/A" }] }));
+  assert.doesNotThrow(() => validateInstagramFormat({ streams: [{ ...video, codec_name: "hevc" }, { codec_type: "audio", codec_name: "aac", sample_rate: "48000" }] }));
+  for (const stream of [
+    { ...video, codec_name: "mpeg4" }, { ...video, codec_name: "av1" },
+    { ...video, width: 1921 }, { ...video, avg_frame_rate: "22/1" },
+    { ...video, avg_frame_rate: "61/1" }, { ...video, avg_frame_rate: "0/0" },
+    { ...video, avg_frame_rate: "30000/0" }, { ...video, avg_frame_rate: "bad" },
+    { ...video, bit_rate: "25000001" },
+  ]) assert.throws(() => validateInstagramFormat({ streams: [stream] }));
+  for (const audio of [
+    { codec_type: "audio", codec_name: "mp3", sample_rate: "48000" },
+    { codec_type: "audio", codec_name: "aac", sample_rate: "44100" },
+  ]) assert.throws(() => validateInstagramFormat({ streams: [video, audio] }));
+  assert.throws(() => validateInstagramFormat({ streams: [] }));
+});

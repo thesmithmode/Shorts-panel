@@ -28,7 +28,7 @@ import { Engine } from "./engine.ts";
 import { groupDeliveries } from "../shared/deliveries.ts";
 import { PLATFORMS, type Platform, type Video } from "../shared/model.ts";
 import { parseMoscow, recoveryAt } from "../shared/scheduler.ts";
-import { inspectVideoFile } from "./media.ts";
+import { inspectVideoFile, VideoValidationError } from "./media.ts";
 import { releaseIdentity } from "./health.ts";
 export interface ApplicationOptions {
   env?: NodeJS.ProcessEnv;
@@ -347,7 +347,7 @@ export function createApplication(options: ApplicationOptions = {}) {
         engine.replan();
       });
       res.status(201).json({ id });
-    } catch {
+    } catch (error) {
       // The final file may already be referenced by a committed transaction.
       // Preserve it even if the caller sees an error; storage accounting includes orphans.
       try {
@@ -355,7 +355,7 @@ export function createApplication(options: ApplicationOptions = {}) {
       } catch {}
       if (!res.headersSent && !res.destroyed)
         res.status(400).json({
-          error: "Загрузка не завершена. Проверьте MP4 и свободное место.",
+          error: error instanceof VideoValidationError ? error.message : "Загрузка не завершена. Проверьте MP4 и свободное место.",
         });
     } finally {
       uploading = false;
