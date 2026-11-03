@@ -8,6 +8,108 @@ import { Engine } from "../src/server/engine.ts";
 import type { PublicationGateway } from "../src/server/contracts.ts";
 import { DAY, HOUR, parseMoscow } from "../src/shared/scheduler.ts";
 import { PLATFORMS, type Video, type Delivery } from "../src/shared/model.ts";
+for (const delay of [10 * 60_000, HOUR])
+  test("rate limit respects exact grace boundary: " + delay, async () => {
+    const { RateLimited } = await import("../src/server/contracts.ts");
+    const dir = mkdtempSync(join(tmpdir(), "shorts-rate-boundary-"));
+    const store = new Store(dir);
+    const clock = parseMoscow("2026-11-02T12:00");
+    const gateway: PublicationGateway = {
+      connections: () => PLATFORMS.map(platform => ({ platform, connected: true })),
+      publish: async () => { throw new RateLimited(clock + delay); },
+      verifyYoutube: async () => {},
+    };
+    try {
+      store.video({ id: "rate", title: "rate", hashtags: "", filename: "rate.mp4", bytes: 1, createdAt: clock, position: 1, scheduledAt: clock, pinned: false, kind: "content", state: "queued", deletedAt: null });
+      await new Engine(store, gateway, () => clock).tick();
+      const expected = delay < HOUR ? clock + delay : parseMoscow("2026-11-02T17:00");
+      assert.ok(store.deliveries().every(d => d.nextAt === expected));
+    } finally { store.db.close(); rmSync(dir, { recursive: true }); }
+  });
+test("platform cooldown delays retries and new jobs without delaying other platforms", async () => {
+  const { RateLimited } = await import("../src/server/contracts.ts");
+  const dir = mkdtempSync(join(tmpdir(), "shorts-rate-limit-"));
+  const store = new Store(dir);
+  let clock = parseMoscow("2026-11-02T12:00");
+  const until = clock + 2 * HOUR;
+  let cooldown = 0;
+  let calls = 0;
+  const gateway: PublicationGateway = {
+    connections: () => PLATFORMS.map(platform => ({ platform, connected: true })),
+    notBefore: platform => platform === "youtube" ? cooldown : 0,
+    publish: async (_v, d) => {
+      if (d.platform === "youtube") {
+        calls++;
+        if (calls === 1) { cooldown = until; throw new RateLimited(until); }
+      }
+      d.state = "published"; d.successAt = clock; store.delivery(d);
+    }, verifyYoutube: async () => {},
+  };
+  try {
+    const add = (id: string) => store.video({ id, title: id, hashtags: "", filename: id + ".mp4", bytes: 1, createdAt: clock, position: store.videos().length + 1, scheduledAt: clock, pinned: true, kind: "content", state: "queued", deletedAt: null });
+    add("a");
+    let engine = new Engine(store, gateway, () => clock);
+    await engine.tick();
+    let first = store.deliveries().find(d => d.platform === "youtube")!;
+    assert.equal(first.state, "failed");
+    assert.equal(first.nextAt, parseMoscow("2026-11-02T17:00"));
+    clock += 5 * 60_000; add("b");
+    engine = new Engine(store, gateway, () => clock);
+    await engine.tick();
+    assert.equal(calls, 1);
+    assert.ok(store.deliveries().filter(d => d.platform !== "youtube").every(d => d.state === "published"));
+    assert.equal(store.deliveries().find(d => d.videoId === "b" && d.platform === "youtube")?.attempts, 0);
+    clock = parseMoscow("2026-11-02T17:00");
+    await engine.tick();
+    assert.equal(calls, 2);
+    assert.equal(store.deliveries().find(d => d.videoId === "a" && d.platform === "youtube")?.state, "published");
+  } finally { store.db.close(); rmSync(dir, { recursive: true }); }
+});
+test("revoked access blocks only its platform and keeps reconciliation IDs across restart", async () => {
+  const { AccessRequired } = await import("../src/server/contracts.ts");
+  const dir = mkdtempSync(join(tmpdir(), "shorts-access-"));
+  let store = new Store(dir);
+  let clock = parseMoscow("2026-11-02T12:00");
+  let revoked = true;
+  let checks = 0;
+  const gateway: PublicationGateway = {
+    connections: () => PLATFORMS.map(platform => ({ platform, connected: platform !== "youtube" || !revoked || checks === 0 })),
+    publish: async (_v, d) => {
+      d.state = "published"; d.successAt = clock; store.delivery(d);
+    },
+    verifyYoutube: async d => {
+      checks++;
+      assert.equal(d.externalId, "already-uploaded");
+      if (revoked) throw new AccessRequired();
+      d.state = "published"; d.successAt = clock; store.delivery(d);
+    },
+  };
+  try {
+    store.video({ id: "access", title: "access", hashtags: "", filename: "access.mp4", bytes: 4, createdAt: clock, position: 1, scheduledAt: clock, pinned: false, kind: "content", state: "dispatched", deletedAt: null });
+    writeFileSync(join(dir, "videos", "access.mp4"), "data");
+    for (const platform of PLATFORMS) store.delivery({ videoId: "access", platform, state: "pending", originalAt: clock, nextAt: clock, externalId: platform === "youtube" ? "already-uploaded" : null, url: null, error: null, successAt: null, attempts: 0 });
+    let engine = new Engine(store, gateway, () => clock);
+    await engine.tick();
+    let d = store.deliveries().find(d => d.platform === "youtube")!;
+    assert.equal(d.state, "blocked");
+    assert.match(d.error!, /повторно подключите/i);
+    assert.equal(d.externalId, "already-uploaded");
+    assert.ok(store.deliveries().filter(d => d.platform !== "youtube").every(d => d.state === "published"));
+    clock += 60_000;
+    await engine.tick();
+    assert.equal(checks, 1);
+    assert.ok(existsSync(join(dir, "videos", "access.mp4")));
+    store.db.close(); store = new Store(dir);
+    engine = new Engine(store, gateway, () => clock);
+    revoked = false;
+    clock = store.deliveries().find(d => d.platform === "youtube")!.nextAt;
+    await engine.tick();
+    d = store.deliveries().find(d => d.platform === "youtube")!;
+    assert.equal(d.state, "published");
+    assert.equal(checks, 2);
+    assert.ok(existsSync(join(dir, "videos", "access.mp4")));
+  } finally { store.db.close(); rmSync(dir, { recursive: true }); }
+});
 test("real SQLite dispatch, failed platform independence, exact file retention across restart", async () => {
   const dir = mkdtempSync(join(tmpdir(), "shorts-engine-"));
   let store = new Store(dir);

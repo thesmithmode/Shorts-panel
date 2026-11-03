@@ -8,7 +8,7 @@ import type {
   PublicationGateway,
   Clock,
 } from "./contracts.ts";
-import { RetryableBeforeSend, RetryableSession, SourceUnavailable } from "./contracts.ts";
+import { AccessRequired, RateLimited, UploadSessionExpired, RetryableBeforeSend, RetryableSession, SourceUnavailable } from "./contracts.ts";
 export class Engine {
   running = false;
   private idleWaiters: (() => void)[] = [];
@@ -117,6 +117,15 @@ export class Engine {
           if (!due) return;
           const v = this.store.videos().find((v) => v.id === due.videoId);
           if (!v || v.deletedAt) return;
+          const cooldown = this.providers.notBefore?.(platform) ?? 0;
+          const retryAt = (earliest: number) => earliest < due.originalAt + HOUR
+            ? earliest : recoveryAt(due.originalAt, Math.max(due.originalAt + HOUR, earliest - 1), platform, this.store.videos(), all);
+          if (cooldown > now) {
+            due.nextAt = retryAt(cooldown);
+            due.error = new RateLimited(cooldown).message;
+            this.store.delivery(due);
+            return;
+          }
           if (
             !this.providers.connections().find((c) => c.platform === platform)
               ?.connected
@@ -147,9 +156,9 @@ export class Engine {
               await this.providers.verifyYoutube(due);
             else await this.providers.publish(v, due);
           } catch (error) {
-            if (error instanceof RetryableBeforeSend || error instanceof RetryableSession || error instanceof SourceUnavailable) {
-              due.state = "failed";
-              due.error = error instanceof SourceUnavailable
+            if (error instanceof AccessRequired || error instanceof RetryableBeforeSend || error instanceof RetryableSession || error instanceof SourceUnavailable) {
+              due.state = error instanceof AccessRequired ? "blocked" : "failed";
+              due.error = error instanceof AccessRequired || error instanceof RateLimited ? error.message : error instanceof SourceUnavailable
                 ? "Исходный файл недоступен или повреждён. Требуется восстановление."
                 : error instanceof RetryableSession
                   ? "Проверим состояние прерванной загрузки по расписанию."
@@ -157,9 +166,11 @@ export class Engine {
               due.nextAt = now < due.originalAt + HOUR
                 ? Math.min(now + 60_000, due.originalAt + HOUR)
                 : recoveryAt(due.originalAt, now, platform, this.store.videos(), all);
+              if (error instanceof RateLimited)
+                due.nextAt = retryAt(Math.max(now + 60_000, error.retryAt));
             } else {
               due.state = "unknown";
-              due.error =
+              due.error = error instanceof UploadSessionExpired ? error.message :
                 "Не удалось подтвердить результат. Проверьте пост на площадке: слепой повтор может создать дубликат.";
             }
             this.store.delivery(due);

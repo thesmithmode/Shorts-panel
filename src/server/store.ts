@@ -116,6 +116,7 @@ export interface Token {
   expiresAt: number;
   account: string;
   accountId?: string;
+  requiresReconnect?: boolean;
 }
 export const configKey = (p: Platform) => `config:${p}`;
 export const tokenKey = (p: Platform) => `token:${p}`;

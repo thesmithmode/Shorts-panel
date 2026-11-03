@@ -9,7 +9,7 @@ import {
   type Token,
 } from "./store.ts";
 import type { Platform, Video, Delivery, Connection } from "../shared/model.ts";
-import { RetryableBeforeSend, RetryableSession, SourceUnavailable } from "./contracts.ts";
+import { AccessRequired, RateLimited, UploadSessionExpired, RetryableBeforeSend, RetryableSession, SourceUnavailable } from "./contracts.ts";
 function tokenResponse(value: any): {
   access_token: string;
   expires_in: number;
@@ -27,6 +27,16 @@ function tokenResponse(value: any): {
   return value;
 }
 const IG = "https://graph.instagram.com/v25.0";
+function checkRateLimit(response: Response): void {
+  if (response.status !== 429) return;
+  const now = Date.now();
+  const header = response.headers.get("retry-after")?.trim() ?? "";
+  const retryAt = /^\d+$/.test(header)
+    ? now + Number(header) * 1000 : Date.parse(header);
+  // Invalid, past, zero or overflowing values use a bounded one-minute fallback.
+  throw new RateLimited(Number.isSafeInteger(retryAt) && retryAt > now && retryAt <= 8.64e15
+    ? retryAt : now + 60_000);
+}
 async function sessionFetch(url: string, init: RequestInit): Promise<Response> {
   let response: Response;
   try {
@@ -34,7 +44,8 @@ async function sessionFetch(url: string, init: RequestInit): Promise<Response> {
   } catch (cause) {
     throw new RetryableSession("Не удалось связаться с сессией загрузки", { cause });
   }
-  if (response.status === 429 || response.status >= 500)
+  checkRateLimit(response);
+  if (response.status >= 500)
     throw new RetryableSession("Временная ошибка сессии загрузки");
   return response;
 }
@@ -43,7 +54,13 @@ async function json(url: string, init?: RequestInit): Promise<any> {
     ...init,
     signal: AbortSignal.timeout(45_000),
   });
+  checkRateLimit(response);
+  if (response.status === 401) throw new AccessRequired();
   const body = (await response.json()) as any;
+  // Only explicit authorization failures. Quotas/5xx are not revoked access.
+  if (response.status < 500 && response.status !== 429 &&
+      (body?.error === "invalid_grant" || body?.error === "invalid_client" || body?.error?.code === 190))
+    throw new AccessRequired();
   if (!response.ok || body.error)
     throw new Error(
       "Площадка отклонила запрос. Проверьте разрешения и подключение аккаунта.",
@@ -55,6 +72,38 @@ export class Providers {
     private store: Store,
     public origin: string,
   ) {}
+  notBefore(p: Platform): number {
+    return this.store.get<number>(`cooldown:${p}`) ?? 0;
+  }
+  private rememberRateLimit(p: Platform, error: unknown): void {
+    if (error instanceof RateLimited)
+      this.store.set(`cooldown:${p}`, Math.max(this.notBefore(p), error.retryAt));
+  }
+  private requireAccess(p: Platform): never {
+    const token = this.store.get<Token>(tokenKey(p));
+    if (token) this.store.set(tokenKey(p), { ...token, requiresReconnect: true });
+    throw new AccessRequired();
+  }
+  private async request(p: Platform, url: string, init?: RequestInit) {
+    try {
+      if (this.notBefore(p) > Date.now()) throw new RateLimited(this.notBefore(p));
+      return await json(url, init);
+    } catch (error) {
+      this.rememberRateLimit(p, error);
+      if (error instanceof AccessRequired) this.requireAccess(p);
+      throw error;
+    }
+  }
+  private async sessionRequest(url: string, init: RequestInit) {
+    try {
+      const response = await sessionFetch(url, init);
+      if (response.status === 401) this.requireAccess("youtube");
+      return response;
+    } catch (error) {
+      this.rememberRateLimit("youtube", error);
+      throw error;
+    }
+  }
   callback(p: Platform) {
     return `${this.origin}/api/oauth/${p}/callback`;
   }
@@ -65,13 +114,15 @@ export class Providers {
       return {
         platform,
         configured: !!c,
-        connected: !!t,
+        connected: !!c && !!t && !t.requiresReconnect,
         account: t?.account ?? null,
         expiresAt: t?.expiresAt ?? null,
         message:
           platform === "tiktok"
             ? "Нужен одобренный Direct Post: способ подключения ещё не выбран."
-            : t
+            : t?.requiresReconnect
+              ? new AccessRequired().message
+              : t
               ? "Аккаунт подключён"
               : c
                 ? "Войдите и разрешите публикацию"
@@ -190,8 +241,10 @@ export class Providers {
     const t = this.store.get<Token>(tokenKey(p));
     const c = this.store.get<AppConfig>(configKey(p));
     if (!t || !c) throw new Error("Подключите аккаунт");
+    if (t.requiresReconnect) throw new AccessRequired();
+    if (this.notBefore(p) > Date.now()) throw new RateLimited(this.notBefore(p));
     if (p === "youtube" && t.expiresAt < Date.now() + 120_000) {
-      const r = await json("https://oauth2.googleapis.com/token", {
+      const r = await this.request(p, "https://oauth2.googleapis.com/token", {
         method: "POST",
         body: new URLSearchParams({
           client_id: c.clientId,
@@ -201,6 +254,8 @@ export class Providers {
         }),
       });
       tokenResponse(r);
+      if (typeof r.refresh_token === "string" && r.refresh_token.trim())
+        t.refreshToken = r.refresh_token;
       t.accessToken = r.access_token;
       t.expiresAt = Date.now() + r.expires_in * 1000;
       this.store.set(tokenKey(p), t);
@@ -208,7 +263,7 @@ export class Providers {
       p === "instagram" &&
       t.expiresAt < Date.now() + 30 * 86_400_000
     ) {
-      const r = await json(
+      const r = await this.request(p,
         "https://graph.instagram.com/refresh_access_token?" +
           new URLSearchParams({
             grant_type: "ig_refresh_token",
@@ -236,8 +291,8 @@ export class Providers {
   }
   canRecover(d: Delivery) {
     if (d.platform !== "youtube") return false;
-    const session = this.store.get<{ location?: unknown }>(`upload:${d.videoId}:youtube`);
-    if (typeof session?.location !== "string") return false;
+    const session = this.store.get<{ location?: unknown; expired?: boolean }>(`upload:${d.videoId}:youtube`);
+    if (session?.expired || typeof session?.location !== "string") return false;
     try {
       this.validateYoutubeLocation(session.location);
       return true;
@@ -259,23 +314,32 @@ export class Providers {
     try {
       token = await this.token(d.platform);
     } catch (cause) {
+      if (cause instanceof AccessRequired || cause instanceof RateLimited) throw cause;
       throw new RetryableBeforeSend("Не удалось обновить доступ к площадке", { cause });
     }
     const save = () => this.store.delivery(d);
     if (d.platform === "youtube") {
       // A recorded session may already have completed. Probe it before sending bytes.
-      const stored = this.store.get<{ location: string }>(`upload:${v.id}:youtube`);
+      const stored = this.store.get<{ location: string; expired?: boolean }>(`upload:${v.id}:youtube`);
+      if (stored?.expired) throw new UploadSessionExpired();
+      const checkExpiry = (response: Response, location: string) => {
+        if (response.status === 404 || response.status === 410) {
+          this.store.set(`upload:${v.id}:youtube`, { location, expired: true });
+          throw new UploadSessionExpired();
+        }
+      };
       let location = stored?.location;
       let offset = 0;
       let result: any;
       if (location) {
         this.validateYoutubeLocation(location);
-        const probe = await sessionFetch(location, {
+        const probe = await this.sessionRequest(location, {
           method: "PUT",
           redirect: "error",
           headers: { "Content-Length": "0", "Content-Range": `bytes */${v.bytes}` },
           signal: AbortSignal.timeout(45_000),
         });
+        checkExpiry(probe, location);
         if (probe.status === 308) {
           const range = probe.headers.get("range");
           if (range) {
@@ -308,6 +372,9 @@ export class Providers {
             signal: AbortSignal.timeout(45_000),
           },
         );
+        try { checkRateLimit(init); }
+        catch (error) { this.rememberRateLimit("youtube", error); throw error; }
+        if (init.status === 401) this.requireAccess("youtube");
         location = init.headers.get("location") ?? undefined;
         if (!init.ok || !location) throw new Error("YouTube не создал загрузку");
         this.validateYoutubeLocation(location);
@@ -315,7 +382,7 @@ export class Providers {
       }
       if (!result) {
         this.requireSource(v);
-        const response = await sessionFetch(location!, {
+        const response = await this.sessionRequest(location!, {
           method: "PUT",
           redirect: "error",
           headers: {
@@ -327,6 +394,7 @@ export class Providers {
           duplex: "half",
           signal: AbortSignal.timeout(15 * 60_000),
         } as any);
+        checkExpiry(response, location!);
         if (response.status === 308) throw new RetryableSession("Загрузка частично принята");
         if (!response.ok) throw new Error("Не удалось подтвердить загрузку YouTube");
         result = await response.json();
@@ -337,7 +405,7 @@ export class Providers {
     } else if (d.platform === "instagram") {
       if (!d.externalId) {
         this.requireSource(v);
-        const r = await json(`${IG}/${token.accountId}/media`, {
+        const r = await this.request("instagram", `${IG}/${token.accountId}/media`, {
           method: "POST",
           body: new URLSearchParams({
             media_type: "REELS",
@@ -353,7 +421,7 @@ export class Providers {
       }
       let status: any;
       try {
-        status = await json(
+        status = await this.request("instagram",
           `${IG}/${d.externalId}?` +
             new URLSearchParams({
               fields: "status_code",
@@ -361,6 +429,7 @@ export class Providers {
             }),
         );
       } catch (cause) {
+        if (cause instanceof AccessRequired || cause instanceof RateLimited) throw cause;
         throw new RetryableSession("Не удалось проверить контейнер Instagram", { cause });
       }
       if (status.status_code === "PUBLISHED") {
@@ -389,7 +458,7 @@ export class Providers {
       this.store.set(publishingKey, true);
       let published: any;
       try {
-        published = await json(`${IG}/${token.accountId}/media_publish`, {
+        published = await this.request("instagram", `${IG}/${token.accountId}/media_publish`, {
           method: "POST",
           body: new URLSearchParams({
             creation_id: d.externalId!,
@@ -397,6 +466,7 @@ export class Providers {
           }),
         });
       } catch (cause) {
+        if (cause instanceof AccessRequired || cause instanceof RateLimited) throw cause;
         throw new RetryableSession("Проверим результат публикации Instagram", { cause });
       }
       this.store.set(`published:${v.id}:instagram`, published.id);
@@ -409,7 +479,7 @@ export class Providers {
       save();
       // Publishing success is durable before optional permalink enrichment.
       try {
-        const media = await json(
+        const media = await this.request("instagram",
           `${IG}/${published.id}?` +
             new URLSearchParams({
               fields: "id,permalink",
@@ -430,7 +500,7 @@ export class Providers {
     let r: any;
     try {
       const t = token ?? (await this.token("youtube"));
-      r = await json(
+      r = await this.request("youtube",
         "https://www.googleapis.com/youtube/v3/videos?" +
           new URLSearchParams({
             part: "status,processingDetails",
@@ -439,6 +509,7 @@ export class Providers {
         { headers: { Authorization: `Bearer ${t.accessToken}` } },
       );
     } catch (cause) {
+      if (cause instanceof AccessRequired || cause instanceof RateLimited) throw cause;
       throw new RetryableSession("Не удалось проверить статус YouTube", { cause });
     }
     const video = r.items?.[0];

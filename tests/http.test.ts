@@ -113,6 +113,22 @@ async function fixture(override: Record<string, string> = {}) {
     },
   };
 }
+for (const expired of [true, false])
+  test("manual retry resets only an explicitly expired YouTube session: " + expired, async () => {
+    const h = await fixture();
+    try {
+      await h.login(); h.video("v", "dispatched");
+      const session = { location: "https://www.googleapis.com/upload/old", expired };
+      h.store.set("upload:v:youtube", session);
+      h.store.delivery({ videoId: "v", platform: "youtube", state: "unknown", originalAt: Date.now(), nextAt: Date.now(), successAt: null, externalId: null, url: null, error: "uncertain", attempts: 1 });
+      assert.equal((await h.req("/api/deliveries/v/youtube/retry", {})).status, 409);
+      assert.deepEqual(h.store.get("upload:v:youtube"), session);
+      assert.equal((await h.req("/api/deliveries/v/youtube/retry", { confirmNoPost: true })).status, 200);
+      assert.deepEqual(h.store.get("upload:v:youtube"), expired ? null : session);
+      assert.equal(h.store.deliveries()[0].state, "pending");
+    } finally { await h.close(); }
+  });
+
 test("HTTP auth/session/origin and rate-limit boundaries", async () => {
   const h = await fixture();
   try {

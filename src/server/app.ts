@@ -522,6 +522,9 @@ export function createApplication(options: ApplicationOptions = {}) {
     if (d.state === "processing")
       return res.status(409).json({ error: "Площадка обрабатывает видео" });
     store.transaction(() => {
+      if (d.state === "unknown" && d.platform === "youtube" && !d.externalId &&
+          store.get<{ expired?: boolean }>(`upload:${d.videoId}:youtube`)?.expired)
+        store.set(`upload:${d.videoId}:youtube`, null);
       if (d.state === "unknown" && d.platform === "instagram")
         store.set(`publishing:${d.videoId}:instagram`, null);
       d.state = "pending";

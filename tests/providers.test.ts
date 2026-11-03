@@ -94,6 +94,157 @@ function harness() {
     },
   };
 }
+for (const p of ["youtube", "instagram"] as const)
+  test(p + " revoked refresh persists reconnect status without losing credentials", async () => {
+    const h = harness();
+    try {
+      const old = { ...h.token, expiresAt: 0 };
+      h.store.set(tokenKey(p), old);
+      h.replies.push({ status: 400, body: p === "youtube"
+        ? { error: "invalid_grant", error_description: "secret-provider-detail" }
+        : { error: { code: 190, message: "secret-provider-detail" } } });
+      await assert.rejects(() => h.provider.token(p), /повторно подключите/i);
+      const connection = h.provider.connections().find(c => c.platform === p)!;
+      assert.equal(connection.connected, false);
+      assert.match(connection.message, /повторно подключите/i);
+      assert.equal(connection.account, old.account);
+      assert.ok(!JSON.stringify(connection).includes("secret-provider-detail"));
+      const saved = h.store.get<Token>(tokenKey(p))!;
+      assert.equal(saved.accessToken, old.accessToken);
+      assert.equal(saved.refreshToken, old.refreshToken);
+      const reopened = new Store(h.store.dir);
+      try {
+        const provider = new Providers(reopened, h.provider.origin);
+        assert.equal(provider.connections().find(c => c.platform === p)?.connected, false);
+        await assert.rejects(() => provider.token(p), /повторно подключите/i);
+        assert.equal(h.calls.length, 1, "revoked credentials must not be retried over HTTP");
+      } finally { reopened.db.close(); }
+      // A failed new authorization must not hide the reconnect warning.
+      h.replies.push({ body: { error: "invalid_grant" }, status: 400 });
+      await assert.rejects(() => h.provider.exchange(p, "bad-code"));
+      assert.equal(h.provider.connections().find(c => c.platform === p)?.connected, false);
+      if (p === "youtube") h.replies.push(
+        { body: { access_token: "new-access", refresh_token: "new-refresh", expires_in: 3600 } },
+        { body: { items: [{ id: "account-id", snippet: { title: "test-owner" } }] } });
+      else h.replies.push(
+        { body: { access_token: "short" } },
+        { body: { access_token: "new-access", expires_in: 5184000 } },
+        { body: { user_id: "account-id", username: "test-owner" } });
+      await h.provider.exchange(p, "new-code");
+      assert.equal(h.provider.connections().find(c => c.platform === p)?.connected, true);
+      assert.equal(h.store.get<Token>(tokenKey(p))?.accessToken, "new-access");
+    } finally { h.close(); }
+  });
+
+for (const status of [429, 500])
+  test("temporary refresh failure " + status + " does not disconnect the account", async () => {
+    const h = harness();
+    try {
+      const old = { ...h.token, expiresAt: 0 };
+      h.store.set(tokenKey("youtube"), old);
+      h.replies.push({ status, body: { error: "temporarily_unavailable" } });
+      await assert.rejects(() => h.provider.token("youtube"));
+      assert.deepEqual(h.store.get(tokenKey("youtube")), old);
+      assert.equal(h.provider.connections()[0].connected, true);
+    } finally { h.close(); }
+  });
+
+for (const header of ["600", "date", "invalid", "0", "999999999999999999999999"])
+  test("rate limit persists Retry-After " + header + " without discarding tokens", async () => {
+    const h = harness();
+    const now = Date.now();
+    const time = mock.method(Date, "now", () => now);
+    try {
+      const old = { ...h.token, expiresAt: 0 };
+      h.store.set(tokenKey("youtube"), old);
+      const until = now + 600_000;
+      const value = header === "date" ? new Date(until).toUTCString() : header;
+      h.replies.push({ status: 429, headers: { "Retry-After": value }, body: {} });
+      await assert.rejects(() => h.provider.token("youtube"));
+      const expected = header === "600" ? until : header === "date"
+        ? Math.floor(until / 1000) * 1000 : now + 60_000;
+      assert.equal(h.provider.notBefore("youtube"), expected);
+      const reopened = new Store(h.store.dir);
+      try {
+        assert.equal(new Providers(reopened, h.provider.origin).notBefore("youtube"), expected);
+      } finally { reopened.db.close(); }
+      assert.equal(h.provider.notBefore("instagram"), 0);
+      assert.deepEqual(h.store.get(tokenKey("youtube")), old);
+    } finally { time.mock.restore(); h.close(); }
+  });
+
+for (const phase of ["youtube-init", "youtube-session", "youtube-bytes", "youtube-status", "instagram-create", "instagram-status", "instagram-publish"])
+  test("429 during " + phase + " preserves external progress and waits before HTTP retry", async () => {
+    const h = harness();
+    const now = Date.now();
+    const time = mock.method(Date, "now", () => now);
+    try {
+      const p = phase.startsWith("youtube") ? "youtube" : "instagram";
+      h.store.set(tokenKey(p), h.token);
+      const d = h.delivery(p);
+      const location = "https://www.googleapis.com/upload/limited";
+      if (phase === "youtube-session") h.store.set("upload:v:youtube", { location });
+      if (phase === "youtube-bytes") h.replies.push({ body: {}, headers: { location } });
+      if (["youtube-status", "instagram-status", "instagram-publish"].includes(phase)) d.externalId = "existing-id";
+      if (phase === "instagram-publish") h.replies.push({ body: { status_code: "FINISHED" } });
+      h.replies.push({ status: 429, headers: { "Retry-After": "600" }, body: {} });
+      await assert.rejects(() => phase === "youtube-status"
+        ? h.provider.verifyYoutube(d) : h.provider.publish(h.video, d));
+      assert.equal(h.provider.notBefore(p), now + 600_000);
+      assert.equal(h.provider.connections().find(c => c.platform === p)?.connected, true);
+      if (phase === "youtube-session" || phase === "youtube-bytes")
+        assert.deepEqual(h.store.get("upload:v:youtube"), { location });
+      if (phase === "instagram-publish") assert.equal(h.store.get("publishing:v:instagram"), true);
+      if (["youtube-status", "instagram-status", "instagram-publish"].includes(phase)) assert.equal(d.externalId, "existing-id");
+      const count = h.calls.length;
+      await assert.rejects(() => h.provider.token(p));
+      assert.equal(h.calls.length, count);
+    } finally { time.mock.restore(); h.close(); }
+  });
+
+test("YouTube refresh preserves a rotated refresh token", async () => {
+  const h = harness();
+  try {
+    h.store.set(tokenKey("youtube"), { ...h.token, expiresAt: 0 });
+    h.replies.push({ body: { access_token: "new", refresh_token: "rotated", expires_in: 3600 } });
+    await h.provider.token("youtube");
+    assert.equal(h.store.get<Token>(tokenKey("youtube"))?.refreshToken, "rotated");
+  } finally { h.close(); }
+});
+
+for (const status of [404, 410])
+  test("expired YouTube session " + status + " is remembered and never reused automatically", async () => {
+    const h = harness();
+    try {
+      h.store.set(tokenKey("youtube"), h.token);
+      const location = "https://www.googleapis.com/upload/expired";
+      h.store.set("upload:v:youtube", { location });
+      const d = h.delivery("youtube");
+      h.replies.push({ status, body: {} });
+      await assert.rejects(() => h.provider.publish(h.video, d), /сессия.*истекла/i);
+      assert.deepEqual(h.store.get("upload:v:youtube"), { location, expired: true });
+      assert.equal(h.provider.canRecover(d), false);
+      await assert.rejects(() => h.provider.publish(h.video, d), /сессия.*истекла/i);
+      assert.equal(h.calls.length, 1);
+      assert.equal(d.externalId, null);
+    } finally { h.close(); }
+  });
+
+for (const p of ["youtube", "instagram"] as const)
+  test(p + " verification detects revoked access and preserves external ID", async () => {
+    const h = harness();
+    try {
+      h.store.set(tokenKey(p), h.token);
+      const d = h.delivery(p);
+      d.externalId = "existing-id";
+      h.replies.push({ status: 401, body: { error: { code: 190 } } });
+      await assert.rejects(() => p === "youtube"
+        ? h.provider.verifyYoutube(d) : h.provider.publish(h.video, d), /повторно подключите/i);
+      assert.equal(h.provider.connections().find(c => c.platform === p)?.connected, false);
+      assert.equal(d.externalId, "existing-id");
+      assert.equal(h.calls.length, 1);
+    } finally { h.close(); }
+  });
 test("OAuth configuration, scope and state are platform specific and secrets stay server side", () => {
   const h = harness();
   try {

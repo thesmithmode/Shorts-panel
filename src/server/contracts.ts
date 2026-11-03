@@ -3,8 +3,26 @@ import type { Video, Delivery, Platform } from "../shared/model.ts";
 export class RetryableBeforeSend extends Error {}
 /** Existing external state can be checked safely before another publication request. */
 export class RetryableSession extends Error {}
+/** Retry-After applies to the whole platform, including other queued videos. */
+export class RateLimited extends RetryableSession {
+  constructor(public readonly retryAt: number) {
+    super("Площадка ограничила частоту запросов. Ожидаем разрешённого времени повтора.");
+  }
+}
 /** Local source is unavailable; no new publication was initiated by this attempt. */
 export class SourceUnavailable extends Error {}
+/** Explicit credential rejection; preserve external state and wait for reconnection. */
+export class AccessRequired extends Error {
+  constructor() {
+    super("Доступ отозван или истёк. Повторно подключите аккаунт.");
+  }
+}
+/** A lost session is not proof that the video was never published. */
+export class UploadSessionExpired extends Error {
+  constructor() {
+    super("Сессия загрузки YouTube истекла. Проверьте отсутствие поста перед новой загрузкой.");
+  }
+}
 /** Queue persistence needed by the worker, independent of SQLite implementation. */
 export interface QueueRepository {
   readonly dir: string;
@@ -17,6 +35,7 @@ export interface QueueRepository {
 /** Publishing capabilities used by the worker; OAuth configuration is not its concern. */
 export interface PublicationGateway {
   connections(): { platform: Platform; connected: boolean }[];
+  notBefore?(platform: Platform): number;
   canRecover?(delivery: Delivery): boolean;
   publish(video: Video, delivery: Delivery): Promise<void>;
   verifyYoutube(delivery: Delivery): Promise<void>;
