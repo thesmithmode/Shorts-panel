@@ -1,5 +1,5 @@
 import { backup } from "node:sqlite";
-import { chmodSync, constants, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "./store.ts";
 
@@ -10,7 +10,8 @@ export async function createDatabaseBackup(store: Store, destination: string): P
   await backup(store.db, database);
   chmodSync(database, 0o600);
   const key = join(destination, "secret.key");
-  copyFileSync(join(store.dir, "secret.key"), key, constants.COPYFILE_EXCL);
-  chmodSync(key, 0o600);
+  const currentKey = readFileSync(join(store.dir, "secret.key"));
+  if (!currentKey.equals(store.key)) throw new Error("Ключ шифрования изменился во время работы панели");
+  writeFileSync(key, store.key, { mode: 0o600, flag: "wx" });
   writeFileSync(join(destination, "BACKUP_COMPLETE"), "shorts-panel-backup-v1\n", { mode: 0o600, flag: "wx" });
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -50,5 +50,18 @@ test("backup command refuses a missing source and creates a restorable snapshot"
     assert.equal(existsSync(join(dir, "missing")), false);
     assert.equal(run(source.dir, join(dir, "good")).status, 0);
     assert.equal(existsSync(join(dir, "good", "BACKUP_COMPLETE")), true);
+  } finally { source.db.close(); rmSync(dir, { recursive: true }); }
+});
+
+
+test("backup rejects an encryption key changed after the database was opened", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shorts-backup-key-"));
+  const source = new Store(join(dir, "source"));
+  const target = join(dir, "backup");
+  try {
+    source.set("secret", "encrypted with original key");
+    writeFileSync(join(source.dir, "secret.key"), Buffer.alloc(32, 7));
+    await assert.rejects(() => createDatabaseBackup(source, target));
+    assert.equal(existsSync(join(target, "BACKUP_COMPLETE")), false);
   } finally { source.db.close(); rmSync(dir, { recursive: true }); }
 });
